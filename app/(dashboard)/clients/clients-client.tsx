@@ -225,7 +225,7 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                       <Button
                         type="button"
                         size="sm"
-                        variant="destructive"
+                        variant="outline"
                         onClick={async (event) => {
                           setMessage("");
                           try {
