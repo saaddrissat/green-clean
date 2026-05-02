@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Env (secrets)
+.env
+.env*.local
+
+# Debug / OS
+.DS_Store
+*.pem
+npm-debug.log*
+
+# Prisma (keep schema; ignore generated if any local-only)
+# prisma/migrations can stay tracked
+
+# IDE
+.idea/
+.vscode/
