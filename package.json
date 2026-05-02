@@ -1,12 +1,15 @@
+
 {
   "name": "green-clean",
   "version": "1.0.0",
   "description": "Green Clean laundry POS SaaS",
   "scripts": {
     "dev": "next dev",
+
     "build": "next build",
     "start": "next start",
-    "lint": "eslint .",
+    "lint": "next lint .",
+    "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed"
