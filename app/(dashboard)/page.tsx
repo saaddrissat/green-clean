@@ -323,7 +323,7 @@ export default function DashboardHomePage() {
       csvRows.push(["Rapport", "Transactions du jour"].join(","));
       csvRows.push(["Periode", selectedPeriodLabel].join(","));
       csvRows.push(["Genere le", generatedAt].join(","));
-      csvRows.push([]);
+      csvRows.push("");
       csvRows.push(["Date", "Transaction", "Client", "Montant (DHs)"].join(","));
       transactionRowsForSelectedDay.forEach((row) => {
         csvRows.push([row.date, row.transactionId, row.client, String(row.amount)].join(","));
@@ -332,7 +332,7 @@ export default function DashboardHomePage() {
       csvRows.push(["Rapport", `Chiffre d'affaires par jour (${selectedPeriodLabel})`].join(","));
       csvRows.push(["Periode", selectedPeriodLabel].join(","));
       csvRows.push(["Genere le", generatedAt].join(","));
-      csvRows.push([]);
+      csvRows.push("");
       csvRows.push(["Jour", "Chiffre d'affaires (DHs)", "Commandes"].join(","));
       periodData.forEach((row) => {
         csvRows.push([row.day, String(row.revenue), String(row.orders)].join(","));

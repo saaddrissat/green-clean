@@ -25,6 +25,7 @@ type OrderRow = {
   total: number;
   dueDate: string;
   createdAt: string;
+  cashierId: string;
   client: {
     id: string;
     fullName: string;

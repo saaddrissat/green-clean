@@ -1,6 +1,6 @@
 "use server";
 
-import { OrderStatus, PaymentMethod, Prisma } from "@prisma/client";
+import { OrderStatus, PaymentMethod } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/prisma";
@@ -171,7 +171,7 @@ export async function createOrderAction(input: CreateOrderInput) {
         orderNumber,
         status: OrderStatus.RECU,
         paymentMethod,
-        total: new Prisma.Decimal(total),
+        total,
         dueDate,
         cashierId: input.cashierId,
         clientId,
@@ -181,8 +181,8 @@ export async function createOrderAction(input: CreateOrderInput) {
             productName: item.productName,
             optionLabel: item.optionLabel,
             quantity: item.quantity,
-            unitPrice: new Prisma.Decimal(item.unitPrice),
-            lineTotal: new Prisma.Decimal(item.unitPrice * item.quantity),
+            unitPrice: item.unitPrice,
+            lineTotal: item.unitPrice * item.quantity,
           })),
         },
       },
@@ -333,13 +333,13 @@ export async function createProductAction(input: CreateProductInput) {
         name,
         barcode,
         imageUrl,
-        basePrice: new Prisma.Decimal(input.basePrice),
+        basePrice: input.basePrice,
         categoryId: input.categoryId,
         isActive: true,
         options: {
           create: {
             label: optionLabel,
-            priceModifier: new Prisma.Decimal(0),
+            priceModifier: 0,
           },
         },
       },

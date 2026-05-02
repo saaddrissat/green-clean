@@ -1,12 +1,21 @@
 import { z } from "zod";
 
+function isDatabaseUrl(value: string) {
+  return (
+    value.startsWith("postgresql://") ||
+    value.startsWith("postgres://") ||
+    value.startsWith("mongodb://") ||
+    value.startsWith("mongodb+srv://")
+  );
+}
+
 const envSchema = z.object({
   DATABASE_URL: z
     .string()
     .min(1, "DATABASE_URL is required.")
     .refine(
-      (value) => value.startsWith("postgresql://") || value.startsWith("postgres://"),
-      "DATABASE_URL must be a valid PostgreSQL connection string.",
+      isDatabaseUrl,
+      "DATABASE_URL must be a PostgreSQL or MongoDB connection string (see prisma/schema.prisma).",
     ),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });

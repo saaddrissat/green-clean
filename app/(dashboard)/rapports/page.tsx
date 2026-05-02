@@ -327,13 +327,13 @@ export default function RapportsPage() {
     csvRows.push(["Rapport", "Synthèse période sélectionnée"].join(","));
     csvRows.push(["Période", rangeLabel].join(","));
     csvRows.push(["Généré le", generatedAt].join(","));
-    csvRows.push([]);
+    csvRows.push("");
 
     csvRows.push(["Résumé", "Valeur"].join(","));
     csvRows.push(["Commandes payées (nombre)", String(filteredTransactions.length)].join(","));
     csvRows.push(["Commandes payées (montant)", String(totalPaidAmount)].join(","));
     csvRows.push(["Dépenses estimées (montant)", String(totalEstimatedExpenses)].join(","));
-    csvRows.push([]);
+    csvRows.push("");
 
     csvRows.push(["Commandes payées - détail"].join(","));
     csvRows.push(["Client", "Commande", "Moyen paiement", "Montant", "Date"].join(","));
@@ -351,7 +351,7 @@ export default function RapportsPage() {
     if (filteredTransactions.length === 0) {
       csvRows.push(["Aucune donnée sur la période"].join(","));
     }
-    csvRows.push([]);
+    csvRows.push("");
 
     csvRows.push(["Pourcentage commandes par catégorie"].join(","));
     csvRows.push(["Catégorie", "Commandes", "Pourcentage"].join(","));
@@ -359,7 +359,7 @@ export default function RapportsPage() {
       const ratio = totalCategoryOrders > 0 ? (category.value / totalCategoryOrders) * 100 : 0;
       csvRows.push([category.name, String(category.value), `${ratio.toFixed(2)}%`].join(","));
     });
-    csvRows.push([]);
+    csvRows.push("");
 
     csvRows.push(["Pourcentage paiements de commandes"].join(","));
     csvRows.push(["Moyen paiement", "Commandes", "Pourcentage"].join(","));
