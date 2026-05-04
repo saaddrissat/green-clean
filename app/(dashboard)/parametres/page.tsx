@@ -1,11 +1,41 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Building2, FileText, HardDrive, PanelLeftClose, PanelLeftOpen, Upload, UserCog } from "lucide-react";
+import { ReportProblemKind } from "@prisma/client";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  Building2,
+  FileText,
+  Flag,
+  HardDrive,
+  PanelLeftClose,
+  PanelLeftOpen,
+  SlidersHorizontal,
+  Upload,
+  UserCog,
+} from "lucide-react";
 
+import { submitAppReportAction } from "@/app/actions/report";
+import { OperationalAlertsCard } from "@/components/settings/operational-alerts-card";
+import { PageAccessDialog } from "@/components/settings/page-access-dialog";
 import { HardwareStatusStrip } from "@/components/hardware/hardware-status-strip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  type AccountItem,
+  type AccountRole,
+  type PageAccess,
+  DEFAULT_CAISSIER_PAGE_ACCESS,
+  FULL_PAGE_ACCESS,
+  effectivePageAccess,
+} from "@/lib/navigation-page-access";
+import { getNavigationContext, setNavigationContext } from "@/lib/navigation-context";
 import {
   clearHardwareLogs,
   getHardwareLogs,
@@ -45,22 +75,23 @@ type OnlineInvoiceTemplates = {
   emailBodyTemplate: string;
 };
 
-type AccountRole = "CAISSIER" | "ADMIN";
+const LEGACY_SETTINGS_STORAGE_KEY = "gc-settings-v1";
 
-type AccountItem = {
-  id: string;
-  fullName: string;
-  username: string;
-  email: string;
-  role: AccountRole;
-  createdAt: string;
-  lastLoginAt: string | null;
-  sessionDurationMinutes: number | null;
-};
+function settingsStorageKeyForUser(userId: string) {
+  return `${LEGACY_SETTINGS_STORAGE_KEY}-${userId}`;
+}
 
-const SETTINGS_STORAGE_KEY = "gc-settings-v1";
+const REPORT_KIND_OPTIONS: { value: ReportProblemKind; label: string }[] = [
+  { value: ReportProblemKind.BUG_TECHNIQUE, label: "Bug ou erreur technique" },
+  { value: ReportProblemKind.CONNEXION_COMPTE, label: "Connexion ou compte" },
+  { value: ReportProblemKind.CAISSE_COMMANDE, label: "Caisse, commande ou suivi" },
+  { value: ReportProblemKind.IMPRESSION_SCANNER, label: "Imprimante, scanner ou périphérique" },
+  { value: ReportProblemKind.SUGGESTION, label: "Suggestion d'amélioration" },
+  { value: ReportProblemKind.AUTRE, label: "Autre" },
+];
 
 export default function ParametresPage() {
+  const [settingsUserId, setSettingsUserId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("entreprise");
   const [isMenuOpen, setIsMenuOpen] = useState(true);
   const [showLogs, setShowLogs] = useState(false);
@@ -77,6 +108,19 @@ export default function ParametresPage() {
     email: "",
     role: "CAISSIER" as AccountRole,
   });
+  const [newAccountPageAccess, setNewAccountPageAccess] = useState<PageAccess>(() => ({
+    ...DEFAULT_CAISSIER_PAGE_ACCESS,
+  }));
+  const [pageAccessOpen, setPageAccessOpen] = useState(false);
+  const [pageAccessEditId, setPageAccessEditId] = useState<string | null>(null);
+  const [navPreviewValue, setNavPreviewValue] = useState<string>("full");
+  const prevRoleRef = useRef<AccountRole>("CAISSIER");
+  const accountsPersistReady = useRef(false);
+
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportFormKey, setReportFormKey] = useState(0);
+  const [reportFeedback, setReportFeedback] = useState<{ error?: string; ok?: boolean } | null>(null);
+  const [reportPending, startReportTransition] = useTransition();
 
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({
     commercialName: "",
@@ -104,6 +148,23 @@ export default function ParametresPage() {
       "Bonjour {clientName},\n\nVeuillez trouver votre facture {invoiceNumber}.\nMontant total: {total}.\n\nMerci,\n{pressingName}",
   });
 
+  function handleReportSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setReportFeedback(null);
+    const fd = new FormData(event.currentTarget);
+    startReportTransition(() => {
+      void submitAppReportAction(null, fd).then((result) => {
+        if (result?.ok) {
+          setReportOpen(false);
+          setReportFormKey((k) => k + 1);
+          setReportFeedback({ ok: true });
+        } else {
+          setReportFeedback({ error: result?.error ?? "Erreur." });
+        }
+      });
+    });
+  }
+
   useEffect(() => {
     const syncLogs = () => setLogs(getHardwareLogs());
     syncLogs();
@@ -112,7 +173,23 @@ export default function ParametresPage() {
   }, []);
 
   useEffect(() => {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    let cancelled = false;
+    void fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { id?: string } | null) => {
+        if (cancelled || !data?.id) return;
+        setSettingsUserId(data.id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsUserId || typeof window === "undefined") return;
+    const key = settingsStorageKeyForUser(settingsUserId);
+    const raw = localStorage.getItem(key);
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw) as {
@@ -131,9 +208,23 @@ export default function ParametresPage() {
       if (parsed.logoPreviewUrl) setLogoPreviewUrl(parsed.logoPreviewUrl);
       setLastSavedSnapshot(raw);
     } catch {
-      localStorage.removeItem(SETTINGS_STORAGE_KEY);
+      localStorage.removeItem(key);
     }
+  }, [settingsUserId]);
+
+  useEffect(() => {
+    const ctx = getNavigationContext();
+    if (ctx.mode === "full") setNavPreviewValue("full");
+    else setNavPreviewValue(ctx.accountId);
   }, []);
+
+  useEffect(() => {
+    const prev = prevRoleRef.current;
+    if (prev !== "CAISSIER" && newAccount.role === "CAISSIER") {
+      setNewAccountPageAccess({ ...DEFAULT_CAISSIER_PAGE_ACCESS });
+    }
+    prevRoleRef.current = newAccount.role;
+  }, [newAccount.role]);
 
   useEffect(() => {
     setInvoiceInfo((prev) => ({
@@ -220,10 +311,13 @@ export default function ParametresPage() {
       createdAt: new Date().toISOString(),
       lastLoginAt: null,
       sessionDurationMinutes: null,
+      pageAccess: newAccount.role === "CAISSIER" ? newAccountPageAccess : FULL_PAGE_ACCESS,
     };
     setAccounts((prev) => [created, ...prev]);
     setNewAccount({ fullName: "", username: "", email: "", role: "CAISSIER" });
+    setNewAccountPageAccess({ ...DEFAULT_CAISSIER_PAGE_ACCESS });
     setAccountMessage("Compte ajouté.");
+    window.dispatchEvent(new CustomEvent("gc-settings-updated"));
   };
 
   const currentSnapshot = useMemo(
@@ -239,17 +333,59 @@ export default function ParametresPage() {
     [companyInfo, invoiceInfo, onlineInvoiceTemplates, accounts, logoFileName, logoPreviewUrl],
   );
 
+  /** Après l’hydratation initiale, synchronise les comptes vers le stockage pour l’aperçu du menu. */
+  useEffect(() => {
+    if (!settingsUserId) return;
+    if (!accountsPersistReady.current) {
+      accountsPersistReady.current = true;
+      return;
+    }
+    try {
+      localStorage.setItem(
+        settingsStorageKeyForUser(settingsUserId),
+        JSON.stringify({
+          companyInfo,
+          invoiceInfo,
+          onlineInvoiceTemplates,
+          accounts,
+          logoFileName,
+          logoPreviewUrl,
+        }),
+      );
+      window.dispatchEvent(new CustomEvent("gc-settings-updated"));
+    } catch {
+      // quota / mode privé
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- déclenché sur les comptes ; le snapshot joint lit l’état courant au même rendu.
+  }, [accounts, settingsUserId]);
+
   const hasChanges = currentSnapshot !== lastSavedSnapshot;
 
   const handleSaveSettings = () => {
+    if (!settingsUserId) {
+      setSaveMessage("Session non chargée — réessayez dans un instant.");
+      return;
+    }
     try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, currentSnapshot);
+      localStorage.setItem(settingsStorageKeyForUser(settingsUserId), currentSnapshot);
       setLastSavedSnapshot(currentSnapshot);
       setSaveMessage("Informations enregistrées.");
+      window.dispatchEvent(new CustomEvent("gc-settings-updated"));
     } catch {
       setSaveMessage("Échec de l'enregistrement local.");
     }
   };
+
+  const editingAccount = pageAccessEditId ? accounts.find((a) => a.id === pageAccessEditId) : undefined;
+
+  const pageAccessDialogValue = useMemo(() => {
+    if (pageAccessEditId && editingAccount) return effectivePageAccess(editingAccount);
+    return newAccountPageAccess;
+  }, [pageAccessEditId, editingAccount, newAccountPageAccess]);
+
+  const pageAccessDialogFull = pageAccessEditId
+    ? editingAccount?.role === "ADMIN"
+    : newAccount.role === "ADMIN";
 
   return (
     <div className="space-y-0 md:flex md:items-start md:gap-4">
@@ -399,6 +535,8 @@ export default function ParametresPage() {
           </CardContent>
         </Card>
 
+        <OperationalAlertsCard />
+
         <Card id="section-factures" className="scroll-mt-4">
           <CardHeader>
             <CardTitle>Factures</CardTitle>
@@ -486,9 +624,40 @@ export default function ParametresPage() {
         <Card id="section-comptes" className="scroll-mt-4">
           <CardHeader>
             <CardTitle>Gestion des comptes</CardTitle>
-            <CardDescription>Ajoutez des comptes Caissier et Admin pour l'application.</CardDescription>
+            <CardDescription>
+              Ajoutez des comptes Caissier et Admin. Pour chaque caissier, choisissez les pages visibles dans le menu
+              (par défaut : Caisse, Suivi, Clients).
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Aperçu du menu (navigation)
+              </label>
+              <select
+                value={navPreviewValue}
+                onChange={(event) => {
+                  const v = event.target.value;
+                  setNavPreviewValue(v);
+                  if (v === "full") setNavigationContext({ mode: "full" });
+                  else setNavigationContext({ mode: "restricted", accountId: v });
+                }}
+                className="mt-1 w-full min-h-10 rounded-lg border border-slate-300 bg-white px-2 text-sm"
+              >
+                <option value="full">Toutes les pages (admin)</option>
+                {accounts
+                  .filter((a) => a.role === "CAISSIER")
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      Caissier · {a.fullName}
+                    </option>
+                  ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                Permet de simuler le menu latéral vu par un caissier après configuration des pages.
+              </p>
+            </div>
+
             <div className="grid gap-3 md:grid-cols-2">
               <input
                 value={newAccount.fullName}
@@ -525,6 +694,32 @@ export default function ParametresPage() {
                 <option value="ADMIN">Admin</option>
               </select>
             </div>
+
+            {newAccount.role === "ADMIN" ? (
+              <p className="text-sm text-slate-600">
+                Les administrateurs ont automatiquement accès à toutes les pages.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-slate-600">
+                  Accès par défaut : <strong>Caisse</strong>, <strong>Suivi</strong>, <strong>Clients</strong>. Ajustez
+                  avec le bouton ci-dessous.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shrink-0 border-emerald-400/60 bg-gradient-to-r from-emerald-50 via-white to-teal-50 text-emerald-900 shadow-sm hover:from-emerald-100 hover:to-teal-100"
+                  onClick={() => {
+                    setPageAccessEditId(null);
+                    setPageAccessOpen(true);
+                  }}
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  Personnaliser l&apos;accès aux pages
+                </Button>
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center justify-between gap-2">
               {accountMessage ? <p className="text-xs text-slate-500">{accountMessage}</p> : <span />}
               <Button type="button" onClick={addAccount}>
@@ -533,13 +728,14 @@ export default function ParametresPage() {
             </div>
 
             <div className="overflow-x-auto rounded-xl border border-slate-200">
-              <table className="w-full min-w-[840px] border-separate border-spacing-0">
+              <table className="w-full min-w-[920px] border-separate border-spacing-0">
                 <thead>
                   <tr className="text-left text-sm text-slate-500">
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Nom</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Identifiant</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Email</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Rôle</th>
+                    <th className="border-b border-slate-200 px-4 py-3 font-semibold">Pages</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Dernière connexion</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">
                       Durée de connexion
@@ -567,6 +763,25 @@ export default function ParametresPage() {
                           </span>
                         </td>
                         <td className="border-b border-slate-200 px-4 py-3">
+                          {account.role === "CAISSIER" ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="gap-1 border-emerald-400/50 text-emerald-900"
+                              onClick={() => {
+                                setPageAccessEditId(account.id);
+                                setPageAccessOpen(true);
+                              }}
+                            >
+                              <SlidersHorizontal className="h-4 w-4" />
+                              Personnaliser
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-slate-400">Toutes les pages</span>
+                          )}
+                        </td>
+                        <td className="border-b border-slate-200 px-4 py-3">
                           {account.lastLoginAt
                             ? new Date(account.lastLoginAt).toLocaleString("fr-FR")
                             : "Jamais connecté"}
@@ -580,7 +795,7 @@ export default function ParametresPage() {
                     ))
                   ) : (
                     <tr>
-                      <td className="px-4 py-6 text-sm text-slate-500" colSpan={6}>
+                      <td className="px-4 py-6 text-sm text-slate-500" colSpan={7}>
                         Aucun compte ajouté pour le moment.
                       </td>
                     </tr>
@@ -588,6 +803,30 @@ export default function ParametresPage() {
                 </tbody>
               </table>
             </div>
+
+            <PageAccessDialog
+              open={pageAccessOpen}
+              onOpenChange={(open) => {
+                setPageAccessOpen(open);
+                if (!open) setPageAccessEditId(null);
+              }}
+              value={pageAccessDialogValue}
+              onChange={(next) => {
+                if (pageAccessEditId) {
+                  setAccounts((prev) =>
+                    prev.map((a) => (a.id === pageAccessEditId ? { ...a, pageAccess: next } : a)),
+                  );
+                } else {
+                  setNewAccountPageAccess(next);
+                }
+              }}
+              fullAccess={pageAccessDialogFull}
+              title={
+                pageAccessEditId
+                  ? `Accès aux pages · ${editingAccount?.fullName ?? ""}`
+                  : "Accès aux pages (nouveau caissier)"
+              }
+            />
           </CardContent>
         </Card>
 
@@ -697,6 +936,102 @@ export default function ParametresPage() {
             </CardContent>
           ) : null}
         </Card>
+
+        <Card id="section-signalement" className="scroll-mt-4 border-slate-200">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Flag className="h-5 w-5 shrink-0 text-rose-600" aria-hidden />
+              Signalement
+            </CardTitle>
+            <CardDescription>
+              Indiquez le type de problème et décrivez ce qui s&apos;est passé. Le message est enregistré avec votre
+              compte pour traitement.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-rose-200 bg-rose-50/80 text-rose-900 hover:bg-rose-100"
+              onClick={() => {
+                setReportFeedback(null);
+                setReportOpen(true);
+              }}
+            >
+              Signaler un problème
+            </Button>
+            {reportFeedback?.ok ? (
+              <p className="text-sm text-emerald-600">Merci, votre signalement a bien été enregistré.</p>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <Dialog
+          open={reportOpen}
+          onOpenChange={(open) => {
+            setReportOpen(open);
+            if (open) {
+              setReportFeedback(null);
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Signaler un problème</DialogTitle>
+              <DialogDescription>
+                Choisissez une catégorie et détaillez votre message (minimum 10 caractères).
+              </DialogDescription>
+            </DialogHeader>
+            <form key={reportFormKey} className="space-y-4" onSubmit={handleReportSubmit}>
+              <div className="space-y-2">
+                <label htmlFor="report-kind" className="text-sm font-medium text-slate-800">
+                  Type de problème
+                </label>
+                <select
+                  id="report-kind"
+                  name="kind"
+                  required
+                  defaultValue={REPORT_KIND_OPTIONS[0]?.value}
+                  className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                >
+                  {REPORT_KIND_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="report-message" className="text-sm font-medium text-slate-800">
+                  Votre message
+                </label>
+                <textarea
+                  id="report-message"
+                  name="message"
+                  required
+                  minLength={10}
+                  maxLength={5000}
+                  rows={5}
+                  placeholder="Décrivez le problème ou la suggestion…"
+                  className="w-full resize-y rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400"
+                />
+              </div>
+              {reportFeedback?.error ? (
+                <p className="text-sm text-rose-600" role="alert">
+                  {reportFeedback.error}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap justify-end gap-2 pt-1">
+                <Button type="button" variant="outline" onClick={() => setReportOpen(false)}>
+                  Annuler
+                </Button>
+                <Button type="submit" disabled={reportPending}>
+                  {reportPending ? "Envoi…" : "Envoyer"}
+                </Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         <div className="flex justify-end pb-2">
           <Button type="button" className="w-full sm:w-auto" onClick={handleSaveSettings} disabled={!hasChanges}>

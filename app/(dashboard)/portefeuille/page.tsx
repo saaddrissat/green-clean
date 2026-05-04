@@ -1,8 +1,9 @@
- "use client";
+"use client";
 
 import { useMemo, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 
+import { recordCashClosureAction } from "@/app/actions/wallet";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -107,6 +108,8 @@ export default function PortefeuillePage() {
   const [transactions] = useState(initialTransactions);
   const [expenses, setExpenses] = useState(initialExpenses);
   const [suppliers, setSuppliers] = useState(initialSuppliers);
+  const [closureFeedback, setClosureFeedback] = useState<{ ok?: boolean; message?: string } | null>(null);
+  const [closurePending, setClosurePending] = useState(false);
 
   const [expenseLabel, setExpenseLabel] = useState("");
   const [expenseAmount, setExpenseAmount] = useState("");
@@ -166,6 +169,25 @@ export default function PortefeuillePage() {
       { TPE: 0, Cash: 0, Crédit: 0 } as Record<PaymentMethod, number>,
     );
   }, [filteredTransactions]);
+
+  const handleCashClosure = async () => {
+    setClosureFeedback(null);
+    setClosurePending(true);
+    try {
+      await recordCashClosureAction();
+      setClosureFeedback({ ok: true, message: "Clôture enregistrée pour aujourd'hui." });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("gc-notifications-updated"));
+      }
+    } catch (e) {
+      setClosureFeedback({
+        ok: false,
+        message: e instanceof Error ? e.message : "Impossible d'enregistrer la clôture.",
+      });
+    } finally {
+      setClosurePending(false);
+    }
+  };
 
   const openDateDialog = () => {
     setDraftMode(periodMode);
@@ -442,8 +464,16 @@ export default function PortefeuillePage() {
               <span>Net à clôturer</span>
               <span className="font-semibold text-emerald-700">{formatDh(totals.balance)}</span>
             </div>
-            <Button type="button" className="w-full sm:w-auto">
-              Valider la clôture
+            <p className="text-xs text-slate-500">
+              La clôture enregistre les totaux réels du jour (commandes et dépenses Prisma) dans l&apos;historique et met à jour les alertes caisse.
+            </p>
+            {closureFeedback?.message ? (
+              <p className={`text-sm ${closureFeedback.ok ? "text-emerald-700" : "text-red-600"}`}>
+                {closureFeedback.message}
+              </p>
+            ) : null}
+            <Button type="button" className="w-full sm:w-auto" disabled={closurePending} onClick={() => void handleCashClosure()}>
+              {closurePending ? "Enregistrement..." : "Valider la clôture"}
             </Button>
           </CardContent>
         </Card>

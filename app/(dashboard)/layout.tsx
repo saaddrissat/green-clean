@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Bell,
   CalendarDays,
@@ -10,6 +10,7 @@ import {
   FileBarChart2,
   LayoutDashboard,
   ListChecks,
+  LogOut,
   Menu,
   ShoppingCart,
   Users,
@@ -25,7 +26,18 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { logoutAction } from "@/app/actions/auth";
+import { getUnreadNotificationCountAction } from "@/app/actions/notifications";
+import { NotificationCenter } from "@/components/notifications/notification-center";
 import { AppSidebar, type SidebarItem } from "@/components/ui/sidebar";
+import { findAccountById } from "@/lib/gc-settings-storage";
+import {
+  effectivePageAccess,
+  firstAllowedHref,
+  hrefToPageKey,
+  isPathAllowed,
+} from "@/lib/navigation-page-access";
+import { getNavigationContext, resetNavigationToFullAccess } from "@/lib/navigation-context";
 import { cn } from "@/lib/utils";
 
 const baseNavItems: SidebarItem[] = [
@@ -72,28 +84,102 @@ const mockIncomingNotifications: Omit<ToastNotification, "id">[] = [
   },
 ];
 
+function filterNavByAccess(
+  items: SidebarItem[],
+  access: Record<string, boolean>,
+): SidebarItem[] {
+  return items.filter((item) => {
+    const key = hrefToPageKey(item.href);
+    if (!key) return true;
+    return access[key] === true;
+  });
+}
+
 export default function DashboardLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   const pathname = usePathname();
+  const router = useRouter();
+  const [navEpoch, setNavEpoch] = useState(0);
   const isCaisse = pathname === "/caisse" || pathname.startsWith("/caisse/");
   const [unreadCount, setUnreadCount] = useState(0);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sessionUser, setSessionUser] = useState<{ id: string; name: string; email: string } | null>(
+    null,
+  );
+  const [logoutPending, startLogoutTransition] = useTransition();
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
   const dismissToast = (toastId: string) => {
     setToasts((prev) => prev.filter((item) => item.id !== toastId));
   };
 
   useEffect(() => {
-    const stored = Number(localStorage.getItem(unreadStorageKey) ?? "0");
-    setUnreadCount(Number.isFinite(stored) ? stored : 0);
+    const sync = () => {
+      void getUnreadNotificationCountAction()
+        .then(setUnreadCount)
+        .catch(() => {});
+    };
+    sync();
+    const id = window.setInterval(sync, 45000);
+    const onFocus = () => sync();
+    const onBus = () => sync();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("gc-notifications-updated", onBus);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("gc-notifications-updated", onBus);
+    };
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { id?: string; name?: string; email?: string } | null) => {
+        if (!cancelled && data?.id && data?.name && data?.email) {
+          setSessionUser({ id: data.id, name: data.name, email: data.email });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => setNavEpoch((n) => n + 1);
+    window.addEventListener("gc-navigation-context-changed", refresh);
+    window.addEventListener("gc-settings-updated", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("gc-navigation-context-changed", refresh);
+      window.removeEventListener("gc-settings-updated", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+
+  const resolvedAccess = useMemo(() => {
+    const ctx = getNavigationContext();
+    if (ctx.mode === "full") return null;
+    const account = findAccountById(ctx.accountId, sessionUser?.id);
+    if (!account) return null;
+    return effectivePageAccess(account);
+  }, [navEpoch, sessionUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps -- navEpoch : recalcul contexte / comptes
+
+  useEffect(() => {
+    if (!resolvedAccess) return;
+    if (isPathAllowed(pathname, resolvedAccess)) return;
+    router.replace(firstAllowedHref(resolvedAccess));
+  }, [pathname, resolvedAccess, router]);
+
+  useEffect(() => {
     if (pathname !== "/notifications") return;
-    setUnreadCount(0);
-    localStorage.setItem(unreadStorageKey, "0");
+    void getUnreadNotificationCountAction()
+      .then(setUnreadCount)
+      .catch(() => {});
   }, [pathname]);
 
   useEffect(() => {
@@ -126,23 +212,28 @@ export default function DashboardLayout({
         dismissToast(incoming.id);
       }, 4200);
 
-      if (pathname !== "/notifications") {
-        setUnreadCount((prev) => {
-          const nextCount = prev + 1;
-          localStorage.setItem(unreadStorageKey, String(nextCount));
-          return nextCount;
-        });
-      }
+      // Les alertes « temps réel » passent par la base (notifications) ; ne pas incrémenter le badge ici.
     }, 45000);
 
     return () => window.clearInterval(interval);
   }, [pathname]);
 
-  const navItems = baseNavItems.map((item) =>
+  const visibleNav = resolvedAccess ? filterNavByAccess(baseNavItems, resolvedAccess) : baseNavItems;
+
+  const navItems = visibleNav.map((item) =>
     item.href === "/notifications" ? { ...item, hasAlert: unreadCount > 0 } : item,
   );
-  const currentUserName = "Utilisateur actuel";
-  const currentUserRole = "Admin";
+  const currentUserName = sessionUser?.name ?? "Utilisateur";
+  const currentUserRole = sessionUser?.email ?? "Compte";
+
+  const handleLogout = () => {
+    resetNavigationToFullAccess();
+    setNavEpoch((n) => n + 1);
+    setMobileMenuOpen(false);
+    startLogoutTransition(() => {
+      void logoutAction();
+    });
+  };
 
   return (
     <div className="h-dvh bg-slate-100 text-slate-900">
@@ -154,10 +245,17 @@ export default function DashboardLayout({
             variant="icon-only"
             currentUserName={currentUserName}
             currentUserRole={currentUserRole}
+            onLogout={handleLogout}
+            logoutDisabled={logoutPending}
           />
         </div>
 
         <div className="relative flex min-h-0 min-w-0 flex-col">
+          <div className="pointer-events-none absolute right-4 top-4 z-30 hidden md:block">
+            <div className="pointer-events-auto">
+              <NotificationCenter />
+            </div>
+          </div>
           <div className="border-b border-slate-200 bg-white px-4 py-3 md:hidden">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -169,7 +267,9 @@ export default function DashboardLayout({
                   <p className="text-xs text-slate-500">Laundry POS</p>
                 </div>
               </div>
-              <Sheet>
+              <div className="flex items-center gap-2">
+                <NotificationCenter />
+              <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
                 <SheetTrigger asChild>
                   <Button
                     type="button"
@@ -181,11 +281,11 @@ export default function DashboardLayout({
                     <Menu className="h-5 w-5" />
                   </Button>
                 </SheetTrigger>
-                <SheetContent className="w-[85vw] max-w-sm p-0">
+                <SheetContent className="flex w-[85vw] max-w-sm flex-col p-0">
                   <SheetHeader className="border-b border-slate-200 p-5">
                     <SheetTitle>Navigation</SheetTitle>
                   </SheetHeader>
-                  <nav className="space-y-2 p-4">
+                  <nav className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
                     {navItems.map((item) => {
                       const Icon = item.icon;
                       return (
@@ -204,14 +304,29 @@ export default function DashboardLayout({
                       );
                     })}
                   </nav>
+                  <div className="border-t border-slate-200 bg-slate-50 p-4">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-12 w-full gap-2 border-rose-200 text-rose-700 hover:bg-rose-50"
+                      onClick={handleLogout}
+                      disabled={logoutPending}
+                    >
+                      <LogOut className="h-4 w-4" />
+                      {logoutPending ? "Déconnexion…" : "Déconnexion"}
+                    </Button>
+                  </div>
                 </SheetContent>
               </Sheet>
+              </div>
             </div>
           </div>
           <main
             className={cn(
-              "min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden",
-              isCaisse ? "p-0" : "p-4 md:p-6",
+              "min-h-0 min-w-0 flex-1 overflow-x-hidden",
+              isCaisse
+                ? "flex flex-col overflow-hidden p-0"
+                : "overflow-y-auto p-4 md:p-6",
             )}
           >
             {children}

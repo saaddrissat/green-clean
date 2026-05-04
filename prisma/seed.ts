@@ -1,6 +1,11 @@
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
+
+/** Données de démo : uniquement pour le compte créé ici (pas pour les nouveaux comptes via l’app). */
+const DEMO_USER_EMAIL = process.env.SEED_DEMO_USER_EMAIL ?? "demo@green-clean.local";
+const DEMO_USER_PASSWORD = process.env.SEED_DEMO_USER_PASSWORD ?? "DemoGreen2026!";
 
 const categorySeeds = [
   { name: "Chemises", icon: "Shirt" },
@@ -114,12 +119,39 @@ const productSeeds = [
 ];
 
 async function main() {
+  const passwordHash = await bcrypt.hash(DEMO_USER_PASSWORD, 12);
+  const demoUser = await prisma.user.upsert({
+    where: { email: DEMO_USER_EMAIL.toLowerCase() },
+    create: {
+      email: DEMO_USER_EMAIL.toLowerCase(),
+      name: "Compte démo Green Clean",
+      passwordHash,
+      phone: "+221700000000",
+      city: "Dakar",
+      employeeCount: 2,
+      laundryCount: 1,
+    },
+    update: {
+      name: "Compte démo Green Clean",
+    },
+  });
+
   const categoryByName = new Map<string, string>();
   for (const category of categorySeeds) {
     const saved = await prisma.category.upsert({
-      where: { name: category.name },
+      where: {
+        userId_name: {
+          userId: demoUser.id,
+          name: category.name,
+        },
+      },
       update: { icon: category.icon, isActive: true },
-      create: category,
+      create: {
+        userId: demoUser.id,
+        name: category.name,
+        icon: category.icon,
+        isActive: true,
+      },
     });
     categoryByName.set(category.name, saved.id);
   }
@@ -159,15 +191,24 @@ async function main() {
     });
   }
 
-  await prisma.client.upsert({
-    where: { phone: "+221700000001" },
-    update: { fullName: "Client Walk-in" },
-    create: {
-      fullName: "Client Walk-in",
-      phone: "+221700000001",
-      email: "walkin@green-clean.local",
-    },
+  const walkin = await prisma.client.findFirst({
+    where: { userId: demoUser.id, phone: "+221700000001" },
   });
+  if (walkin) {
+    await prisma.client.update({
+      where: { id: walkin.id },
+      data: { fullName: "Client Walk-in" },
+    });
+  } else {
+    await prisma.client.create({
+      data: {
+        userId: demoUser.id,
+        fullName: "Client Walk-in",
+        phone: "+221700000001",
+        email: "walkin@green-clean.local",
+      },
+    });
+  }
 }
 
 main()

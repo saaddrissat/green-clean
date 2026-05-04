@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { resolveAuthSecret } from "./auth-secret";
+
 function isDatabaseUrl(value: string) {
   return (
     value.startsWith("postgresql://") ||
@@ -17,11 +19,18 @@ const envSchema = z.object({
       isDatabaseUrl,
       "DATABASE_URL must be a PostgreSQL or MongoDB connection string (see prisma/schema.prisma).",
     ),
+  AUTH_SECRET: z
+    .string()
+    .min(
+      32,
+      "AUTH_SECRET doit contenir au moins 32 caractères. Ajoutez-le dans .env (ex. : openssl rand -base64 32).",
+    ),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
 const parsed = envSchema.safeParse({
   DATABASE_URL: process.env.DATABASE_URL,
+  AUTH_SECRET: resolveAuthSecret(),
   NODE_ENV: process.env.NODE_ENV,
 });
 

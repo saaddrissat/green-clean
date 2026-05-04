@@ -171,7 +171,6 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
         clientName: newCustomerName || customerQuery,
         dueDate,
         paymentMethod,
-        cashierId: "cashier-local-1",
         items: cartItems.map((item) => ({
           productId: item.productId,
           productName: item.productName,
@@ -311,7 +310,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
   };
 
   return (
-    <div className="flex min-h-dvh w-full max-w-none flex-col gap-0">
+    <div className="flex min-h-dvh w-full max-w-none flex-col gap-0 lg:h-full lg:min-h-0 lg:flex-1 lg:overflow-hidden">
       <input ref={scannerInputRef} aria-label="Scanner barcode input" className="pointer-events-none absolute h-0 w-0 opacity-0" tabIndex={-1} />
 
       {dataError ? (
@@ -325,9 +324,9 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-0 lg:min-h-dvh">
-        <div className="grid min-h-0 w-full min-w-0 flex-1 grid-cols-1 divide-y divide-slate-200 overflow-hidden rounded-none border-0 bg-white shadow-none lg:grid-cols-[4.5rem_minmax(0,1fr)_min(100%,22rem)] lg:divide-x lg:divide-y-0 xl:grid-cols-[4.5rem_minmax(0,1fr)_24rem]">
-          <div className="flex flex-row gap-1.5 overflow-x-auto p-2 lg:flex lg:w-full lg:flex-col lg:items-center lg:gap-2 lg:overflow-y-auto lg:overflow-x-visible lg:bg-slate-50/90 lg:p-2 lg:py-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-0 lg:min-h-0 lg:flex-1 lg:overflow-hidden">
+        <div className="grid min-h-0 w-full min-w-0 flex-1 grid-cols-1 divide-y divide-slate-200 overflow-hidden rounded-none border-0 bg-white shadow-none lg:h-full lg:min-h-0 lg:max-h-full lg:grid-cols-[4.5rem_minmax(0,1fr)_min(100%,22rem)] lg:grid-rows-1 lg:divide-x lg:divide-y-0 xl:grid-cols-[4.5rem_minmax(0,1fr)_24rem]">
+          <div className="flex flex-row gap-1.5 overflow-x-auto p-2 lg:h-full lg:min-h-0 lg:flex lg:w-full lg:flex-col lg:items-center lg:gap-2 lg:overflow-y-auto lg:overflow-x-visible lg:bg-slate-50/90 lg:p-2 lg:py-4">
             {catalogCategories.map((category) => {
               const Icon = categoryIconMap[category.icon] ?? categoryIconMap.Package;
               const isActive = category.id === activeCategory;
@@ -348,7 +347,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
             })}
           </div>
 
-          <div className="flex min-h-[16rem] flex-1 flex-col bg-white lg:min-h-0">
+          <div className="flex min-h-[16rem] flex-1 flex-col bg-white lg:h-full lg:min-h-0 lg:overflow-hidden">
             <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Catégorie</p>
               <div className="relative w-full sm:max-w-md">
@@ -474,8 +473,8 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
             </div>
           </div>
 
-          <aside className="flex max-h-[min(70vh,32rem)] flex-col bg-white lg:max-h-none">
-            <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+          <aside className="flex max-h-[min(70vh,32rem)] min-h-0 flex-col overflow-hidden bg-white lg:h-full lg:max-h-none">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500 text-white">
                   <Receipt className="h-5 w-5" />
@@ -489,7 +488,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
               </span>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-4">
               {cartItems.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center">
                   <div className="mb-4 flex h-24 w-24 items-center justify-center rounded-full bg-sky-50 text-sky-300">
@@ -545,7 +544,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
               )}
             </div>
 
-            <div className="space-y-2 border-t border-slate-100 px-4 py-3 text-sm text-slate-700">
+            <div className="shrink-0 space-y-2 border-t border-slate-100 px-4 py-3 text-sm text-slate-700">
               <div className="flex justify-between">
                 <span className="text-slate-500">Sous-total</span>
                 <span className="font-medium tabular-nums">{formatXof(priceBreakdown.ht)}</span>
@@ -560,7 +559,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 px-4 pb-2">
+            <div className="grid shrink-0 grid-cols-2 gap-3 px-4 pb-2">
               <Button
                 type="button"
                 variant="outline"
@@ -588,7 +587,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
               </Button>
             </div>
 
-            <div className="px-4 pb-4">
+            <div className="shrink-0 px-4 pb-4">
               <button
                 type="button"
                 onClick={() => cart.clearCart()}

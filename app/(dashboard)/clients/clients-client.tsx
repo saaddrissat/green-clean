@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, SendHorizontal, Trash2 } from "lucide-react";
+import { Minus, Pencil, Plus, Search, SendHorizontal, Trash2 } from "lucide-react";
 
 import {
   createClientAction,
@@ -10,6 +10,7 @@ import {
   getClientDetailsAction,
   getRecentClientOrdersAction,
   sendClientInvoiceAction,
+  updateClientAction,
 } from "@/app/actions/pos";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,6 +22,7 @@ type ClientRow = {
   phone: string | null;
   email: string | null;
   totalOrders: number;
+  storeCredit?: number;
 };
 
 type ClientsClientProps = {
@@ -29,7 +31,6 @@ type ClientsClientProps = {
 
 type ClientDetails = Awaited<ReturnType<typeof getClientDetailsAction>>;
 type RecentClientOrders = Awaited<ReturnType<typeof getRecentClientOrdersAction>>;
-type ClientBalances = Awaited<ReturnType<typeof getClientBalancesAction>>;
 
 const statusLabels: Record<string, string> = {
   RECU: "Recu",
@@ -43,6 +44,9 @@ const paymentMethodLabels: Record<string, string> = {
   CARD: "Carte",
   MOBILE_MONEY: "Mobile money",
 };
+
+const formatDh = (n: number) =>
+  `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(n)} DHs`;
 
 export function ClientsClient({ initialClients }: ClientsClientProps) {
   const [clients, setClients] = useState(initialClients);
@@ -58,6 +62,17 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
   const [recentOrders, setRecentOrders] = useState<RecentClientOrders>([]);
   const [balancesByClient, setBalancesByClient] = useState<Record<string, number>>({});
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+
+  const [editMode, setEditMode] = useState(false);
+  const [editFullName, setEditFullName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editStoreCredit, setEditStoreCredit] = useState(0);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  /** Nom affiché tout de suite à l’ouverture (sans attendre le serveur). */
+  const [detailPreviewName, setDetailPreviewName] = useState<string | null>(null);
+  /** Erreur chargement détail — visible dans la popup (pas seulement sous la liste). */
+  const [detailsError, setDetailsError] = useState<string | null>(null);
 
   useEffect(() => {
     const loadDashboardData = async () => {
@@ -91,17 +106,42 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
     );
   }, [clients, query]);
 
+  const refreshBalances = async () => {
+    try {
+      const balances = await getClientBalancesAction();
+      setBalancesByClient(
+        balances.reduce<Record<string, number>>((acc, entry) => {
+          acc[entry.clientId] = entry.balanceDue;
+          return acc;
+        }, {}),
+      );
+    } catch {
+      /* ignore */
+    }
+  };
+
   const handleAddClient = async () => {
     setIsSaving(true);
     setMessage("");
     try {
       const created = await createClientAction({ fullName, phone, email });
-      setClients((prev) => [created, ...prev]);
+      setClients((prev) => [
+        {
+          id: created.id,
+          fullName: created.fullName,
+          phone: created.phone,
+          email: created.email,
+          totalOrders: created.totalOrders,
+          storeCredit: created.storeCredit ?? 0,
+        },
+        ...prev,
+      ]);
       setFullName("");
       setPhone("");
       setEmail("");
       setMessage("Client ajouté avec succès.");
       setIsAddClientOpen(false);
+      void refreshBalances();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Erreur ajout client.");
     } finally {
@@ -109,20 +149,97 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
     }
   };
 
-  const handleOpenClientDetails = async (client: ClientRow) => {
+  const handleOpenClientDetails = async (
+    client: ClientRow,
+    options?: { openInEditMode?: boolean },
+  ) => {
     setIsHistoryLoading(true);
+    setDetailsError(null);
+    setDetailPreviewName(client.fullName);
     setMessage("");
+    setEditMode(false);
     setIsClientDetailsOpen(true);
     try {
       const details = await getClientDetailsAction(client.id);
       setSelectedClientDetails(details);
+      setEditFullName(details.client.fullName);
+      setEditPhone(details.client.phone ?? "");
+      setEditEmail(details.client.email ?? "");
+      setEditStoreCredit(
+        typeof details.client.storeCredit === "number" ? details.client.storeCredit : 0,
+      );
+      setEditMode(options?.openInEditMode ?? false);
     } catch (error) {
       setSelectedClientDetails(null);
-      setMessage(error instanceof Error ? error.message : "Erreur chargement historique.");
+      const msg = error instanceof Error ? error.message : "Erreur chargement historique.";
+      setDetailsError(msg);
+      setMessage(msg);
     } finally {
       setIsHistoryLoading(false);
     }
   };
+
+  const beginEdit = () => {
+    if (!selectedClientDetails) return;
+    setEditFullName(selectedClientDetails.client.fullName);
+    setEditPhone(selectedClientDetails.client.phone ?? "");
+    setEditEmail(selectedClientDetails.client.email ?? "");
+    setEditStoreCredit(selectedClientDetails.client.storeCredit ?? 0);
+    setEditMode(true);
+  };
+
+  const cancelEdit = () => {
+    setEditMode(false);
+    if (selectedClientDetails) {
+      setEditFullName(selectedClientDetails.client.fullName);
+      setEditPhone(selectedClientDetails.client.phone ?? "");
+      setEditEmail(selectedClientDetails.client.email ?? "");
+      setEditStoreCredit(selectedClientDetails.client.storeCredit ?? 0);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedClientDetails) return;
+    setIsSavingEdit(true);
+    setMessage("");
+    try {
+      await updateClientAction({
+        clientId: selectedClientDetails.client.id,
+        fullName: editFullName,
+        phone: editPhone || null,
+        email: editEmail || null,
+        storeCredit: editStoreCredit,
+      });
+      const details = await getClientDetailsAction(selectedClientDetails.client.id);
+      setSelectedClientDetails(details);
+      setClients((prev) =>
+        prev.map((c) =>
+          c.id === details.client.id
+            ? {
+                ...c,
+                fullName: details.client.fullName,
+                phone: details.client.phone,
+                email: details.client.email,
+                storeCredit: details.client.storeCredit,
+              }
+            : c,
+        ),
+      );
+      setEditMode(false);
+      setMessage("Client mis à jour.");
+      void refreshBalances();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Erreur enregistrement.");
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const adjustCredit = (delta: number) => {
+    setEditStoreCredit((prev) => Math.max(0, Math.round((prev + delta) * 100) / 100));
+  };
+
+  const selectedId = selectedClientDetails?.client.id;
 
   return (
     <div className="space-y-4">
@@ -158,7 +275,7 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
 
       <Card>
         <CardContent className="overflow-x-auto p-0">
-          <table className="w-full min-w-[780px] border-separate border-spacing-0">
+          <table className="w-full min-w-[960px] border-separate border-spacing-0">
             <thead>
               <tr className="text-left text-sm text-slate-500">
                 <th className="border-b border-slate-200 px-4 py-3 font-semibold">Nom</th>
@@ -166,20 +283,26 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                 <th className="border-b border-slate-200 px-4 py-3 font-semibold">Email</th>
                 <th className="border-b border-slate-200 px-4 py-3 text-right font-semibold">Total commandes</th>
                 <th className="border-b border-slate-200 px-4 py-3 text-right font-semibold">Crédit / Solde</th>
-                <th className="border-b border-slate-200 px-4 py-3 text-right font-semibold">Action</th>
+                <th className="min-w-[168px] border-b border-slate-200 px-4 py-3 text-right font-semibold">Action</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((client) => (
-                <tr key={client.id} className="text-sm text-slate-700 transition hover:bg-slate-50">
+                <tr
+                  key={client.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleOpenClientDetails(client)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handleOpenClientDetails(client);
+                    }
+                  }}
+                  className="cursor-pointer text-sm text-slate-700 transition hover:bg-slate-50"
+                >
                   <td className="border-b border-slate-200 px-4 py-4 font-semibold text-slate-900">
-                    <button
-                      type="button"
-                      className="text-left text-slate-900 hover:underline"
-                      onClick={() => handleOpenClientDetails(client)}
-                    >
-                      {client.fullName}
-                    </button>
+                    {client.fullName}
                   </td>
                   <td className="border-b border-slate-200 px-4 py-4">{client.phone ?? "-"}</td>
                   <td className="border-b border-slate-200 px-4 py-4">{client.email ?? "-"}</td>
@@ -189,11 +312,7 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                   <td className="border-b border-slate-200 px-4 py-4 text-right">
                     {balancesByClient[client.id] > 0 ? (
                       <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
-                        Crédit:{" "}
-                        {new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(
-                          balancesByClient[client.id],
-                        )}{" "}
-                        DHs
+                        Reste: {formatDh(balancesByClient[client.id])}
                       </span>
                     ) : (
                       <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
@@ -201,13 +320,31 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                       </span>
                     )}
                   </td>
-                  <td className="border-b border-slate-200 px-4 py-4">
-                    <div className="flex items-center justify-end gap-2">
+                  <td
+                    className="min-w-[168px] border-b border-slate-200 px-4 py-4"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                       <Button
                         type="button"
-                        size="sm"
+                        size="icon"
                         variant="outline"
-                        onClick={async (event) => {
+                        className="h-10 w-10 shrink-0 rounded-lg border-emerald-200 text-emerald-900 hover:bg-emerald-50"
+                        aria-label="Modifier le client"
+                        title="Modifier"
+                        onClick={() => void handleOpenClientDetails(client, { openInEditMode: true })}
+                      >
+                        <Pencil className="h-4 w-4" aria-hidden />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-10 w-10 shrink-0 rounded-lg text-slate-900"
+                        aria-label="Envoyer la facture par email"
+                        title="Envoyer la facture"
+                        onClick={async () => {
                           setMessage("");
                           try {
                             const sent = await sendClientInvoiceAction(client.id);
@@ -219,14 +356,16 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                           }
                         }}
                       >
-                        <SendHorizontal className="mr-1.5 h-4 w-4" />
-                        Envoyer
+                        <SendHorizontal className="h-4 w-4" aria-hidden />
                       </Button>
                       <Button
                         type="button"
-                        size="sm"
+                        size="icon"
                         variant="outline"
-                        onClick={async (event) => {
+                        className="h-10 w-10 shrink-0 rounded-lg text-slate-900"
+                        aria-label="Supprimer le client"
+                        title="Supprimer"
+                        onClick={async () => {
                           setMessage("");
                           try {
                             await deleteClientAction(client.id);
@@ -236,13 +375,13 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                               setIsClientDetailsOpen(false);
                             }
                             setMessage("Client supprimé avec succès.");
+                            void refreshBalances();
                           } catch (error) {
                             setMessage(error instanceof Error ? error.message : "Erreur suppression client.");
                           }
                         }}
                       >
-                        <Trash2 className="mr-1.5 h-4 w-4" />
-                        Supprimer
+                        <Trash2 className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
                   </td>
@@ -328,68 +467,260 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isClientDetailsOpen} onOpenChange={setIsClientDetailsOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Détails client</DialogTitle>
-            <DialogDescription>
-              {selectedClientDetails?.client.fullName ?? "Chargement des informations client..."}
-            </DialogDescription>
-          </DialogHeader>
-          {isHistoryLoading ? (
-            <p className="text-sm text-slate-500">Chargement...</p>
-          ) : selectedClientDetails ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-2">
-                <p className="text-sm text-slate-700">
-                  <span className="font-semibold">Téléphone:</span> {selectedClientDetails.client.phone ?? "-"}
-                </p>
-                <p className="text-sm text-slate-700">
-                  <span className="font-semibold">Email:</span> {selectedClientDetails.client.email ?? "-"}
-                </p>
-                <p className="text-sm text-slate-700">
-                  <span className="font-semibold">Total commandes:</span> {selectedClientDetails.client.totalOrders}
-                </p>
-                <p className="text-sm text-slate-700">
-                  <span className="font-semibold">Crédit / Solde:</span>{" "}
-                  {selectedClientDetails.client.balanceDue > 0
-                    ? `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(
-                        selectedClientDetails.client.balanceDue,
-                      )} DHs à payer`
-                    : "Solde OK"}
-                </p>
-              </div>
+      <Dialog
+        open={isClientDetailsOpen}
+        onOpenChange={(open) => {
+          setIsClientDetailsOpen(open);
+          if (!open) {
+            setEditMode(false);
+            setSelectedClientDetails(null);
+            setDetailPreviewName(null);
+            setDetailsError(null);
+          }
+        }}
+      >
+        <DialogContent className="flex h-[min(90dvh,760px)] max-h-[90vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <div className="shrink-0 border-b border-slate-100 px-6 pb-4 pt-6">
+            <DialogHeader className="space-y-1 text-left">
+              <DialogTitle>Historique & détails client</DialogTitle>
+              <DialogDescription asChild>
+                <span className="block text-sm">
+                  {detailsError ? (
+                    <span className="font-medium text-rose-600">{detailsError}</span>
+                  ) : isHistoryLoading ? (
+                    <span className="text-slate-500">
+                      Chargement…{" "}
+                      <span className="font-medium text-slate-700">
+                        {detailPreviewName ?? selectedClientDetails?.client.fullName ?? ""}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="font-medium text-slate-700">
+                      {selectedClientDetails?.client.fullName ?? detailPreviewName ?? "Client"}
+                    </span>
+                  )}
+                </span>
+              </DialogDescription>
+            </DialogHeader>
+          </div>
 
-              <div className="space-y-2">
-                {selectedClientDetails.orders.length > 0 ? (
-                  selectedClientDetails.orders.map((order) => (
-                    <div key={order.id} className="rounded-xl border border-slate-200 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="font-semibold text-slate-900">{order.orderNumber}</p>
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
-                          {statusLabels[order.status] ?? order.status}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-slate-600">
-                        {new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(order.total)} DHs -{" "}
-                        {paymentMethodLabels[order.paymentMethod] ?? order.paymentMethod}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {new Date(order.createdAt).toLocaleString("fr-FR")} | Livraison:{" "}
-                        {new Date(order.dueDate).toLocaleDateString("fr-FR")}
-                      </p>
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                    Aucune commande pour ce client.
-                  </p>
-                )}
+          <div className="min-h-[min(50dvh,420px)] flex-1 overflow-y-auto px-6 py-4">
+            {isHistoryLoading ? (
+              <div className="flex flex-col gap-2 py-8 text-center">
+                <p className="text-sm font-medium text-slate-600">Chargement de l&apos;historique…</p>
+                <p className="text-xs text-slate-500">
+                  {detailPreviewName ? `Client : ${detailPreviewName}` : null}
+                </p>
               </div>
+            ) : selectedClientDetails ? (
+              <div className="space-y-4">
+                {editMode ? (
+                  <div className="space-y-3 rounded-xl border border-sky-200 bg-sky-50/80 p-4">
+                    <p className="text-sm font-semibold text-slate-800">Modifier le client</p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-slate-600">Nom complet</span>
+                        <input
+                          value={editFullName}
+                          onChange={(e) => setEditFullName(e.target.value)}
+                          className="min-h-10 rounded-lg border border-slate-300 px-3"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-slate-600">Téléphone</span>
+                        <input
+                          value={editPhone}
+                          onChange={(e) => setEditPhone(e.target.value)}
+                          className="min-h-10 rounded-lg border border-slate-300 px-3"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-sm md:col-span-2">
+                        <span className="text-slate-600">Email</span>
+                        <input
+                          type="email"
+                          value={editEmail}
+                          onChange={(e) => setEditEmail(e.target.value)}
+                          className="min-h-10 rounded-lg border border-slate-300 px-3"
+                        />
+                      </label>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-medium text-slate-600">Crédit magasin (DHs)</p>
+                      <p className="mb-2 text-xs text-slate-500">
+                        Réduit le « reste à payer » sur les commandes non livrées. Utilisez les boutons pour ajouter ou
+                        retirer du crédit.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(-100)}>
+                          <Minus className="h-4 w-4" />
+                          100
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(-50)}>
+                          <Minus className="h-4 w-4" />
+                          50
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(50)}>
+                          <Plus className="h-4 w-4" />
+                          50
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(100)}>
+                          <Plus className="h-4 w-4" />
+                          100
+                        </Button>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={editStoreCredit || ""}
+                          onChange={(e) =>
+                            setEditStoreCredit(
+                              e.target.value === "" ? 0 : Math.max(0, Number.parseFloat(e.target.value) || 0),
+                            )
+                          }
+                          className="min-h-10 w-32 rounded-lg border border-slate-300 px-2 text-sm"
+                        />
+                        <span className="text-xs text-slate-500">DHs</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-2">
+                    <p className="text-sm text-slate-700">
+                      <span className="font-semibold">Téléphone:</span> {selectedClientDetails.client.phone ?? "-"}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      <span className="font-semibold">Email:</span> {selectedClientDetails.client.email ?? "-"}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      <span className="font-semibold">Total commandes:</span> {selectedClientDetails.client.totalOrders}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      <span className="font-semibold">Commandes non livrées (brut):</span>{" "}
+                      {formatDh(selectedClientDetails.client.ordersOwed ?? 0)}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      <span className="font-semibold">Crédit magasin:</span>{" "}
+                      {formatDh(selectedClientDetails.client.storeCredit ?? 0)}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      <span className="font-semibold">Reste à payer:</span>{" "}
+                      {(selectedClientDetails.client.balanceDue ?? 0) > 0
+                        ? formatDh(selectedClientDetails.client.balanceDue ?? 0)
+                        : "Solde OK"}
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-slate-800">Historique des commandes</p>
+                  {selectedClientDetails.orders.length > 0 ? (
+                    selectedClientDetails.orders.map((order) => (
+                      <div key={order.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-semibold text-slate-900">{order.orderNumber}</p>
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                            {statusLabels[order.status] ?? order.status}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {formatDh(order.total)} — {paymentMethodLabels[order.paymentMethod] ?? order.paymentMethod}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {new Date(order.createdAt).toLocaleString("fr-FR")} | Livraison:{" "}
+                          {new Date(order.dueDate).toLocaleDateString("fr-FR")}
+                        </p>
+                        {order.items.length > 0 ? (
+                          <ul className="mt-2 space-y-1 border-t border-slate-100 pt-2 text-xs text-slate-600">
+                            {order.items.map((item) => (
+                              <li key={item.id} className="flex flex-wrap justify-between gap-2">
+                                <span>
+                                  {item.productName} ({item.optionLabel}) × {item.quantity}
+                                </span>
+                                <span className="font-medium text-slate-800">{formatDh(item.lineTotal)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                      Aucune commande pour ce client.
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-rose-100 bg-rose-50/90 px-4 py-6 text-center">
+                <p className="text-sm font-medium text-rose-800">
+                  {detailsError ?? "Impossible de charger le détail de ce client."}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {!editMode ? (
+                <>
+                  <Button type="button" variant="outline" disabled={!selectedId} onClick={beginEdit}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Modifier
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!selectedId}
+                    onClick={async () => {
+                      if (!selectedId) return;
+                      setMessage("");
+                      try {
+                        const sent = await sendClientInvoiceAction(selectedId);
+                        setMessage(`Facture envoyée à ${sent.recipient} (${sent.orderNumber}) avec succès.`);
+                      } catch (error) {
+                        setMessage(error instanceof Error ? error.message : "Erreur envoi facture.");
+                      }
+                    }}
+                  >
+                    <SendHorizontal className="mr-2 h-4 w-4" />
+                    Envoyer
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-rose-200 text-rose-800 hover:bg-rose-50"
+                    disabled={!selectedId}
+                    onClick={async () => {
+                      if (!selectedId) return;
+                      setMessage("");
+                      try {
+                        await deleteClientAction(selectedId);
+                        setClients((prev) => prev.filter((entry) => entry.id !== selectedId));
+                        setIsClientDetailsOpen(false);
+                        setSelectedClientDetails(null);
+                        setMessage("Client supprimé avec succès.");
+                        void refreshBalances();
+                      } catch (error) {
+                        setMessage(error instanceof Error ? error.message : "Erreur suppression client.");
+                      }
+                    }}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Supprimer
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button type="button" variant="outline" onClick={cancelEdit} disabled={isSavingEdit}>
+                    Annuler
+                  </Button>
+                  <Button type="button" onClick={() => void handleSaveEdit()} disabled={isSavingEdit || !editFullName.trim()}>
+                    {isSavingEdit ? "Enregistrement..." : "Enregistrer"}
+                  </Button>
+                </>
+              )}
             </div>
-          ) : (
-            <p className="text-sm text-slate-500">Impossible de charger le détail client.</p>
-          )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

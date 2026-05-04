@@ -1,10 +1,9 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Search } from "lucide-react";
-import { OrderStatus } from "@prisma/client";
-
-import { updateOrderStatusAction } from "@/app/actions/pos";
+import { ArrowRight, Ban, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { cancelOrderAction, updateOrderStatusAction } from "@/app/actions/pos";
+import type { OrderStatus } from "@/lib/order-status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -48,6 +47,7 @@ const statusTabs: Array<{ key: OrderStatus | "ALL"; label: string }> = [
   { key: "EN_COURS", label: "En cours" },
   { key: "TERMINE", label: "Termine" },
   { key: "LIVRE", label: "Livre" },
+  { key: "ANNULE", label: "Annule" },
 ];
 
 const statusBadgeClass: Record<OrderStatus, string> = {
@@ -55,6 +55,7 @@ const statusBadgeClass: Record<OrderStatus, string> = {
   EN_COURS: "bg-amber-100 text-amber-800",
   TERMINE: "bg-emerald-100 text-emerald-800",
   LIVRE: "bg-sky-100 text-sky-800",
+  ANNULE: "bg-rose-100 text-rose-800",
 };
 
 const nextLabel: Partial<Record<OrderStatus, string>> = {
@@ -120,6 +121,9 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
   const [calendarMonth, setCalendarMonth] = useState(new Date());
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const [cancelTarget, setCancelTarget] = useState<OrderRow | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelError, setCancelError] = useState("");
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -188,6 +192,7 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
       EN_COURS: baseFiltered.filter((order) => order.status === "EN_COURS").length,
       TERMINE: baseFiltered.filter((order) => order.status === "TERMINE").length,
       LIVRE: baseFiltered.filter((order) => order.status === "LIVRE").length,
+      ANNULE: baseFiltered.filter((order) => order.status === "ANNULE").length,
     };
   }, [orders, periodMode, query, selectedDate, rangeStart, rangeEnd]);
 
@@ -251,6 +256,28 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
         );
       } catch {
         // keep optimistic UI simple for now
+      }
+    });
+  };
+
+  const handleConfirmCancel = () => {
+    if (!cancelTarget) return;
+    const reason = cancelReason.trim();
+    if (reason.length < 3) {
+      setCancelError("Indiquez une raison (au moins 3 caractères).");
+      return;
+    }
+    setCancelError("");
+    startTransition(async () => {
+      try {
+        await cancelOrderAction({ orderId: cancelTarget.id, reason });
+        setOrders((prev) =>
+          prev.map((order) => (order.id === cancelTarget.id ? { ...order, status: "ANNULE" } : order)),
+        );
+        setCancelTarget(null);
+        setCancelReason("");
+      } catch (error) {
+        setCancelError(error instanceof Error ? error.message : "Annulation impossible.");
       }
     });
   };
@@ -474,7 +501,27 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
                       </div>
                     </DialogContent>
                   </Dialog>
-                  {nextLabel[order.status] ? (
+                  {order.status !== "LIVRE" && order.status !== "ANNULE" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-rose-200 text-rose-800"
+                      onClick={() => {
+                        setCancelTarget(order);
+                        setCancelReason("");
+                        setCancelError("");
+                      }}
+                    >
+                      <Ban className="mr-1 h-4 w-4" />
+                      Annuler
+                    </Button>
+                  ) : null}
+                  {order.status === "ANNULE" ? (
+                    <Button size="sm" variant="ghost" disabled>
+                      <Ban className="mr-1 h-4 w-4" />
+                      Annulée
+                    </Button>
+                  ) : nextLabel[order.status] ? (
                     <Button size="sm" onClick={() => handleAdvanceStatus(order.id)} disabled={isPending}>
                       {nextLabel[order.status]}
                       <ArrowRight className="ml-1 h-4 w-4" />
@@ -550,7 +597,27 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
                             </div>
                           </DialogContent>
                         </Dialog>
-                        {nextLabel[order.status] ? (
+                        {order.status !== "LIVRE" && order.status !== "ANNULE" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-rose-200 text-rose-800"
+                            onClick={() => {
+                              setCancelTarget(order);
+                              setCancelReason("");
+                              setCancelError("");
+                            }}
+                          >
+                            <Ban className="mr-1 h-4 w-4" />
+                            Annuler
+                          </Button>
+                        ) : null}
+                        {order.status === "ANNULE" ? (
+                          <Button size="sm" variant="ghost" disabled>
+                            <Ban className="mr-1 h-4 w-4" />
+                            Annulée
+                          </Button>
+                        ) : nextLabel[order.status] ? (
                           <Button
                             size="sm"
                             onClick={() => handleAdvanceStatus(order.id)}
@@ -682,6 +749,32 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
           </CardContent>
         </Card>
       </section>
+
+      <Dialog open={Boolean(cancelTarget)} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Annuler la commande</DialogTitle>
+            <DialogDescription>
+              Ticket {cancelTarget?.orderNumber} — l&apos;annulation est journalisée (raison, auteur, montant).
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            className="min-h-24 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+            placeholder="Raison obligatoire (ex. demande client, erreur de saisie…)"
+            value={cancelReason}
+            onChange={(event) => setCancelReason(event.target.value)}
+          />
+          {cancelError ? <p className="text-sm text-rose-600">{cancelError}</p> : null}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={() => setCancelTarget(null)}>
+              Retour
+            </Button>
+            <Button type="button" variant="destructive" disabled={isPending} onClick={handleConfirmCancel}>
+              Confirmer l&apos;annulation
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

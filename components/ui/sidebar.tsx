@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { LucideIcon } from "lucide-react";
+import { LogOut, type LucideIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 export type SidebarItem = {
@@ -20,6 +22,9 @@ type AppSidebarProps = {
   currentUserRole?: string;
   /** Narrow rail with icons only (labels in native tooltip). */
   variant?: "default" | "icon-only";
+  /** Ouvre une popup (popover) avec le bouton déconnexion — zone utilisateur en bas. */
+  onLogout?: () => void;
+  logoutDisabled?: boolean;
 };
 
 export function AppSidebar({
@@ -28,6 +33,8 @@ export function AppSidebar({
   currentUserName = "Utilisateur actuel",
   currentUserRole = "Admin",
   variant = "default",
+  onLogout,
+  logoutDisabled,
 }: AppSidebarProps) {
   const pathname = usePathname();
   const iconOnly = variant === "icon-only";
@@ -108,23 +115,63 @@ export function AppSidebar({
           iconOnly ? "flex justify-center p-2" : "p-3",
         )}
       >
-        <div
-          className={cn(
-            "flex items-center rounded-xl bg-slate-900/80 text-slate-100",
-            iconOnly ? "h-12 w-12 justify-center" : "gap-3 px-3 py-2",
-          )}
-          title={`${currentUserName} - ${currentUserRole}`}
-        >
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">
-            {initials || "U"}
-          </div>
-          {!iconOnly ? (
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">{currentUserName}</p>
-              <p className="truncate text-xs text-slate-400">{currentUserRole}</p>
+        {onLogout ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full items-center rounded-xl bg-slate-900/80 text-left text-slate-100 transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70",
+                  iconOnly ? "h-12 w-12 justify-center p-0" : "gap-3 px-3 py-2",
+                )}
+                title={`${currentUserName} — ${currentUserRole}`}
+                aria-label="Ouvrir le menu compte"
+              >
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">
+                  {initials || "U"}
+                </div>
+                {!iconOnly ? (
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{currentUserName}</p>
+                    <p className="truncate text-xs text-slate-400">{currentUserRole}</p>
+                  </div>
+                ) : null}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="right" align="end" sideOffset={10} className="w-56 p-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Compte</p>
+              <p className="mb-3 truncate text-sm font-medium text-slate-900">{currentUserName}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full gap-2 border-rose-200/80 text-rose-700 hover:bg-rose-50"
+                onClick={onLogout}
+                disabled={logoutDisabled}
+              >
+                <LogOut className="h-4 w-4" />
+                {logoutDisabled ? "Déconnexion…" : "Déconnexion"}
+              </Button>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <div
+            className={cn(
+              "flex items-center rounded-xl bg-slate-900/80 text-slate-100",
+              iconOnly ? "h-12 w-12 justify-center" : "gap-3 px-3 py-2",
+            )}
+            title={`${currentUserName} - ${currentUserRole}`}
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">
+              {initials || "U"}
             </div>
-          ) : null}
-        </div>
+            {!iconOnly ? (
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">{currentUserName}</p>
+                <p className="truncate text-xs text-slate-400">{currentUserRole}</p>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
+import { createCalendarEventAction, listCalendarEventsAction } from "@/app/actions/calendar";
+import { getCalendarOrderEventsAction } from "@/app/actions/pos";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -20,6 +22,7 @@ type CalendarEvent = {
   reminder: string;
 };
 type CalendarViewMode = "days" | "hours";
+type OrderStatusLabel = "Recu" | "En cours" | "Termine" | "Livre";
 
 const WEEK_DAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
 const EVENT_COLORS = ["#0ea5e9", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6"];
@@ -31,6 +34,12 @@ const formatMonthTitle = (date: Date) =>
   new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" }).format(date);
 const formatHour = (dateValue: string) =>
   new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(new Date(dateValue));
+const orderStatusLabelMap: Record<string, OrderStatusLabel> = {
+  RECU: "Recu",
+  EN_COURS: "En cours",
+  TERMINE: "Termine",
+  LIVRE: "Livre",
+};
 
 const toInputDate = (date: Date) => {
   const y = date.getFullYear();
@@ -69,37 +78,39 @@ const buildMonthDays = (monthDate: Date) => {
 const isSameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
-const initialEvents: CalendarEvent[] = [
-  {
-    id: "ev-1",
-    title: "Retrait client pro",
-    start: "2026-05-05T10:00",
-    end: "2026-05-05T11:00",
-    allDay: false,
-    color: "#0ea5e9",
-    location: "Boutique principale",
-    description: "Préparer les commandes pressing premium.",
-    guests: "manager@greenclean.ma",
-    reminder: "30 min",
-  },
-  {
-    id: "ev-2",
-    title: "Maintenance machine",
-    start: "2026-05-08T08:30",
-    end: "2026-05-08T10:30",
-    allDay: false,
-    color: "#f59e0b",
-    location: "Atelier",
-    description: "Contrôle hebdomadaire et nettoyage des filtres.",
-    guests: "technique@greenclean.ma",
-    reminder: "1 h",
-  },
-];
+function mapDbCalendarRow(row: {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  color: string;
+  location: string;
+  description: string;
+  guests: string;
+  reminder: string;
+}): CalendarEvent {
+  return {
+    id: row.id,
+    title: row.title,
+    start: toInputDateTime(new Date(row.start)),
+    end: toInputDateTime(new Date(row.end)),
+    allDay: row.allDay,
+    color: row.color,
+    location: row.location,
+    description: row.description,
+    guests: row.guests,
+    reminder: row.reminder,
+  };
+}
 
 export default function CalendrierPage() {
   const today = useMemo(() => toDayStart(new Date()), []);
   const [visibleMonth, setVisibleMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-  const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
+  const [customEvents, setCustomEvents] = useState<CalendarEvent[]>([]);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [orderEvents, setOrderEvents] = useState<CalendarEvent[]>([]);
   const [selectedDate, setSelectedDate] = useState(today);
   const [viewMode, setViewMode] = useState<CalendarViewMode>("days");
 
@@ -113,6 +124,64 @@ export default function CalendrierPage() {
   const [description, setDescription] = useState("");
   const [guests, setGuests] = useState("");
   const [reminder, setReminder] = useState("30 min");
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateCustomEvents = async () => {
+      try {
+        const rows = await listCalendarEventsAction();
+        if (cancelled) return;
+        setCustomEvents(rows.map(mapDbCalendarRow));
+      } catch {
+        if (!cancelled) setCustomEvents([]);
+      }
+    };
+    void hydrateCustomEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateOrderEvents = async () => {
+      try {
+        const orderItems = await getCalendarOrderEventsAction();
+        if (cancelled) return;
+        const mappedEvents: CalendarEvent[] = orderItems.map((order) => {
+          const dueDate = new Date(order.dueDate);
+          const dayKey = toInputDate(dueDate);
+          const title = order.clientName
+            ? `Collecte client - ${order.clientName}`
+            : `Collecte client - ${order.orderNumber}`;
+          const statusLabel = orderStatusLabelMap[order.status] ?? "Recu";
+          return {
+            id: `order-${order.id}`,
+            title,
+            start: `${dayKey}T09:00`,
+            end: `${dayKey}T10:00`,
+            allDay: false,
+            color: "#10b981",
+            location: "Caisse / Retrait client",
+            description: `Commande ${order.orderNumber} • Statut: ${statusLabel}`,
+            guests: "",
+            reminder: "1 h",
+          };
+        });
+        setOrderEvents(mappedEvents);
+      } catch {
+        if (!cancelled) {
+          setOrderEvents([]);
+        }
+      }
+    };
+    void hydrateOrderEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const events = useMemo(() => [...customEvents, ...orderEvents], [customEvents, orderEvents]);
 
   const monthDays = useMemo(() => buildMonthDays(visibleMonth), [visibleMonth]);
   const periodLabel = useMemo(() => formatMonthTitle(visibleMonth), [visibleMonth]);
@@ -177,24 +246,36 @@ export default function CalendrierPage() {
     setIsCreateDialogOpen(true);
   };
 
-  const handleCreateEvent = () => {
+  const handleCreateEvent = async () => {
     if (!title.trim()) return;
-    const start = allDay ? `${startDateTime}T00:00` : startDateTime;
-    const end = allDay ? `${endDateTime}T23:59` : endDateTime;
-    const nextEvent: CalendarEvent = {
-      id: `ev-${Date.now()}`,
-      title: title.trim(),
-      start,
-      end,
-      allDay,
-      color: eventColor,
-      location: location.trim(),
-      description: description.trim(),
-      guests: guests.trim(),
-      reminder,
-    };
-    setEvents((prev) => [...prev, nextEvent]);
-    setIsCreateDialogOpen(false);
+    setCreateError(null);
+    const startDayPart = allDay ? (startDateTime.includes("T") ? startDateTime.split("T")[0] : startDateTime) : startDateTime;
+    const endDayPart = allDay ? (endDateTime.includes("T") ? endDateTime.split("T")[0] : endDateTime) : endDateTime;
+    const start = allDay ? `${startDayPart}T00:00` : startDateTime;
+    const end = allDay ? `${endDayPart}T23:59` : endDateTime;
+    setIsCreating(true);
+    try {
+      await createCalendarEventAction({
+        title: title.trim(),
+        start: new Date(start).toISOString(),
+        end: new Date(end).toISOString(),
+        allDay,
+        color: eventColor,
+        location: location.trim(),
+        description: description.trim(),
+        guests: guests.trim(),
+        reminder,
+      });
+      const rows = await listCalendarEventsAction();
+      setCustomEvents(rows.map(mapDbCalendarRow));
+      resetForm();
+      setIsCreateDialogOpen(false);
+      window.dispatchEvent(new CustomEvent("gc-notifications-updated"));
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : "Impossible d'enregistrer l'événement.");
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   return (
@@ -481,12 +562,14 @@ export default function CalendrierPage() {
               />
             </label>
 
+            {createError ? <p className="text-sm text-red-600">{createError}</p> : null}
+
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
                 Annuler
               </Button>
-              <Button type="button" onClick={handleCreateEvent}>
-                Enregistrer
+              <Button type="button" onClick={handleCreateEvent} disabled={isCreating}>
+                {isCreating ? "Enregistrement..." : "Enregistrer"}
               </Button>
             </div>
           </div>

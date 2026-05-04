@@ -220,6 +220,7 @@ export default function DashboardHomePage() {
   const [periodDays, setPeriodDays] = useState<PeriodPreset>(1);
   const [recentOrders, setRecentOrders] = useState(initialRecentOrders);
   const [isPaymentDetailsOpen, setIsPaymentDetailsOpen] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
 
   const periodData = useMemo(() => revenueSeries90d.slice(-periodDays), [periodDays]);
 
@@ -352,6 +353,72 @@ export default function DashboardHomePage() {
     URL.revokeObjectURL(url);
   };
 
+  const exportRevenueReportPdf = () => {
+    const periodTitle = `Période : ${selectedPeriodLabel}`;
+    const generated = new Date().toLocaleString("fr-FR");
+    const revenueTotal = formatDh(kpis.revenue);
+    const ordersTotal = new Intl.NumberFormat("fr-FR").format(kpis.orders);
+
+    let bodyContent = "";
+    if (periodDays === 1) {
+      const rows = transactionRowsForSelectedDay
+        .map(
+          (row) =>
+            `<tr><td>${row.date}</td><td>${row.transactionId}</td><td>${row.client}</td><td>${row.amount}</td></tr>`,
+        )
+        .join("");
+      bodyContent = `
+          <h2>Transactions du jour</h2>
+          <table>
+            <thead><tr><th>Date</th><th>Transaction</th><th>Client</th><th>Montant (DHs)</th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="4" style="text-align:center;color:#64748b;">Aucune ligne</td></tr>`}</tbody>
+          </table>`;
+    } else {
+      const rows = periodData
+        .map(
+          (row) =>
+            `<tr><td>${row.day}</td><td>${formatDh(row.revenue)}</td><td>${row.orders}</td><td>${row.activeClients}</td></tr>`,
+        )
+        .join("");
+      bodyContent = `
+          <h2>Chiffre d&apos;affaires par jour</h2>
+          <table>
+            <thead><tr><th>Jour</th><th>Chiffre d&apos;affaires</th><th>Commandes</th><th>Clients actifs</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+    }
+
+    const printWindow = window.open("", "_blank", "width=980,height=740");
+    if (!printWindow) return;
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Export — Revenu par jours</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; }
+            h1 { margin: 0 0 8px 0; }
+            h2 { margin-top: 24px; margin-bottom: 8px; font-size: 18px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #cbd5e1; padding: 8px; font-size: 12px; text-align: left; }
+            th { background: #f1f5f9; }
+            .meta { color: #475569; }
+          </style>
+        </head>
+        <body>
+          <h1>Revenu par jours</h1>
+          <p class="meta"><strong>${periodTitle}</strong></p>
+          <p class="meta"><strong>Généré le :</strong> ${generated}</p>
+          <p><strong>CA total :</strong> ${revenueTotal} — <strong>Commandes :</strong> ${ordersTotal}</p>
+          ${bodyContent}
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
   return (
     <div className="space-y-6">
       <section className="flex flex-wrap items-center justify-between gap-3">
@@ -446,7 +513,7 @@ export default function DashboardHomePage() {
               <CardTitle className="text-lg">Revenu par jours</CardTitle>
               <CardDescription>Évolution du chiffre d&apos;affaires journalier.</CardDescription>
             </div>
-            <Button type="button" variant="outline" size="sm" onClick={exportRevenueReport}>
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsExportDialogOpen(true)}>
               <Download className="mr-2 h-4 w-4" />
               Export
             </Button>
@@ -597,6 +664,39 @@ export default function DashboardHomePage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isExportDialogOpen} onOpenChange={setIsExportDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Choisir le format d&apos;export</DialogTitle>
+            <DialogDescription>
+              Exporter le graphique « Revenu par jours » pour la période sélectionnée ({selectedPeriodLabel}) en PDF ou
+              CSV.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Button
+              type="button"
+              onClick={() => {
+                exportRevenueReportPdf();
+                setIsExportDialogOpen(false);
+              }}
+            >
+              Exporter en PDF
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                exportRevenueReport();
+                setIsExportDialogOpen(false);
+              }}
+            >
+              Exporter en CSV
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -12,6 +12,7 @@ enum OrderStatus {
   EN_COURS
   TERMINE
   LIVRE
+  ANNULE
 }
 
 enum PaymentMethod {
@@ -29,19 +30,87 @@ enum ExpenseCategory {
   AUTRE
 }
 
+enum ReportProblemKind {
+  BUG_TECHNIQUE
+  CONNEXION_COMPTE
+  CAISSE_COMMANDE
+  IMPRESSION_SCANNER
+  SUGGESTION
+  AUTRE
+}
+
+enum NotificationPriority {
+  INFO
+  REMINDER
+  CRITICAL
+}
+
+enum NotificationCategory {
+  SECURITY_AUDIT
+  OPERATIONS
+  CALENDAR
+  SMART_ALERT
+  BILLING
+}
+
+model User {
+  id             String    @id @default(cuid()) @map("_id")
+  name           String
+  email          String    @unique
+  passwordHash   String
+  phone          String
+  city           String
+  employeeCount  Int
+  laundryCount   Int
+  /** Heure de fermeture boutique locale "HH:mm" pour rappels caisse (optionnel). */
+  storeClosingTime   String?
+  /** Seuil alerte dépenses / revenus du jour (ex. 0.4 = 40%). */
+  expenseAlertRatio  Float?   @default(0.4)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  categories     Category[]
+  clients        Client[]
+  orders         Order[]
+  providers      Provider[]
+  expenses       Expense[]
+  appReports     AppReport[]
+  notifications  Notification[]
+  cancelledOrders CancelledOrderAudit[]
+  cashClosures   CashClosure[]
+  calendarEvents CalendarEvent[]
+}
+
+model AppReport {
+  id        String            @id @default(cuid()) @map("_id")
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      ReportProblemKind
+  message   String
+  createdAt DateTime          @default(now())
+
+  @@index([userId, createdAt])
+}
+
 model Category {
   id        String    @id @default(cuid()) @map("_id")
-  name      String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  nameAr    String?
   icon      String
   isActive  Boolean   @default(true)
   products  Product[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId])
 }
 
 model Product {
   id          String                 @id @default(cuid()) @map("_id")
   name        String
+  nameAr      String?
   barcode     String                 @unique
   imageUrl    String?
   basePrice   Float               
@@ -59,6 +128,7 @@ model Product {
 model ProductServiceOption {
   id            String   @id @default(cuid()) @map("_id")
   label         String
+  labelAr       String?
   priceModifier Float  @default(0) 
   productId     String
   product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -68,17 +138,27 @@ model ProductServiceOption {
 
 model Client {
   id          String   @id @default(cuid()) @map("_id")
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   fullName    String
-  phone       String?  @unique
-  email       String?  @unique
+  phone       String?
+  email       String?
+  /** Crédit magasin (DHs) : réduit le reste à payer sur les commandes non livrées. */
+  storeCredit Float    @default(0)
   totalOrders Int      @default(0)
   orders      Order[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, phone])
+  @@index([userId, email])
 }
 
 model Order {
   id            String        @id @default(cuid()) @map("_id")
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   orderNumber   String        @unique
   status        OrderStatus   @default(RECU)
   paymentMethod PaymentMethod
@@ -91,8 +171,75 @@ model Order {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
+  @@index([userId, status, createdAt])
+  @@index([userId, createdAt])
   @@index([status, createdAt])
   @@index([cashierId, createdAt])
+}
+
+model Notification {
+  id         String               @id @default(cuid()) @map("_id")
+  userId     String
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       NotificationCategory
+  priority   NotificationPriority @default(INFO)
+  title      String
+  message    String
+  isRead     Boolean              @default(false)
+  link       String?
+  dedupeKey  String?
+  metadata   Json?
+  createdAt  DateTime             @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead, createdAt])
+}
+
+model CancelledOrderAudit {
+  id           String   @id @default(cuid()) @map("_id")
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderId      String
+  orderNumber  String
+  reason       String
+  actorId      String
+  lostAmount   Float
+  cancelledAt  DateTime @default(now())
+  metadata     Json?
+
+  @@index([userId, cancelledAt])
+}
+
+model CashClosure {
+  id            String   @id @default(cuid()) @map("_id")
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  closureDate   DateTime
+  closedAt      DateTime @default(now())
+  revenueTotal  Float    @default(0)
+  expenseTotal  Float    @default(0)
+
+  @@index([userId, closureDate])
+}
+
+model CalendarEvent {
+  id             String    @id @default(cuid()) @map("_id")
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title          String
+  start          DateTime
+  end            DateTime
+  allDay         Boolean   @default(false)
+  color          String
+  location       String?
+  description    String?
+  guests         String?
+  reminder       String?
+  reminder15SentAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId, start])
 }
 
 model OrderItem {
@@ -114,16 +261,22 @@ model OrderItem {
 
 model Provider {
   id        String    @id @default(cuid()) @map("_id")
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
   phone     String?
   email     String?
   expenses  Expense[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+
+  @@index([userId])
 }
 
 model Expense {
   id          String          @id @default(cuid()) @map("_id")
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   title       String
   amount      Float         
   category    ExpenseCategory @default(AUTRE)
@@ -134,5 +287,6 @@ model Expense {
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
+  @@index([userId, expenseDate, category])
   @@index([expenseDate, category])
 }

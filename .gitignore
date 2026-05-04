@@ -20,3 +20,9 @@ npm-debug.log*
 # IDE
 .idea/
 .vscode/
+
+# TypeScript
+*.tsbuildinfo
+
+# Dossier local (exports, non versionné)
+green clean sheet/

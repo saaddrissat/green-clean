@@ -1,9 +1,20 @@
 "use server";
 
-import { OrderStatus, PaymentMethod } from "@prisma/client";
+import { NotificationCategory, NotificationPriority, OrderStatus, PaymentMethod } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 
+import { notifyInvoiceSentAction } from "@/app/actions/notifications";
+import { getSessionUser } from "@/lib/auth/get-session";
+import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+
+async function requireAccountUserId(): Promise<string> {
+  const user = await getSessionUser();
+  if (!user) {
+    throw new Error("Non authentifié.");
+  }
+  return user.id;
+}
 
 type CreateOrderItemInput = {
   productId: string;
@@ -17,13 +28,13 @@ type CreateOrderInput = {
   clientName?: string;
   dueDate: string;
   paymentMethod: "CASH" | "CARD" | "MOBILE_MONEY";
-  cashierId: string;
   items: CreateOrderItemInput[];
 };
 
 type CreateCategoryInput = {
   name: string;
   icon?: string;
+  nameAr?: string;
 };
 
 type CreateProductInput = {
@@ -31,6 +42,8 @@ type CreateProductInput = {
   basePrice: number;
   categoryId: string;
   optionLabel: string;
+  optionLabelAr?: string;
+  nameAr?: string;
   imageUrl?: string;
 };
 
@@ -60,8 +73,9 @@ function toSafeDbError(error: unknown, context: string) {
 
 export async function getPosCatalogAction() {
   try {
+    const userId = await requireAccountUserId();
     const categories = await prisma.category.findMany({
-      where: { isActive: true },
+      where: { isActive: true, userId },
       orderBy: { name: "asc" },
       include: {
         products: {
@@ -75,16 +89,19 @@ export async function getPosCatalogAction() {
     return categories.map((category) => ({
       id: category.id,
       name: category.name,
+      nameAr: category.nameAr,
       icon: category.icon,
       products: category.products.map((product) => ({
         id: product.id,
         name: product.name,
+        nameAr: product.nameAr,
         barcode: product.barcode,
         imageUrl: product.imageUrl,
         basePrice: Number(product.basePrice),
         options: product.options.map((option) => ({
           id: option.id,
           label: option.label,
+          labelAr: option.labelAr,
           priceModifier: Number(option.priceModifier),
         })),
       })),
@@ -96,7 +113,9 @@ export async function getPosCatalogAction() {
 
 export async function getClientsAction() {
   try {
+    const userId = await requireAccountUserId();
     const clients = await prisma.client.findMany({
+      where: { userId },
       orderBy: [{ totalOrders: "desc" }, { fullName: "asc" }],
       take: 50,
     });
@@ -107,6 +126,7 @@ export async function getClientsAction() {
       phone: client.phone,
       email: client.email,
       totalOrders: client.totalOrders,
+      storeCredit: Number(client.storeCredit),
     }));
   } catch (error) {
     throw toSafeDbError(error, "lecture clients");
@@ -118,6 +138,11 @@ export async function createOrderAction(input: CreateOrderInput) {
     throw new Error("Commande invalide: date et articles requis.");
   }
 
+  const sessionUser = await getSessionUser();
+  if (!sessionUser) {
+    throw new Error("Non authentifié.");
+  }
+  const userId = sessionUser.id;
   const dueDate = new Date(input.dueDate);
   if (Number.isNaN(dueDate.getTime())) {
     throw new Error("Date de rendu invalide.");
@@ -144,11 +169,22 @@ export async function createOrderAction(input: CreateOrderInput) {
   const paymentMethod = input.paymentMethod as PaymentMethod;
 
   const order = await prisma.$transaction(async (tx) => {
+    for (const item of input.items) {
+      const productOk = await tx.product.findFirst({
+        where: { id: item.productId, category: { userId } },
+        select: { id: true },
+      });
+      if (!productOk) {
+        throw new Error("Article invalide ou catalogue expire : rechargez la caisse.");
+      }
+    }
+
     let clientId: string | null = null;
     const clientName = input.clientName?.trim();
     if (clientName) {
       const existing = await tx.client.findFirst({
         where: {
+          userId,
           fullName: {
             equals: clientName,
             mode: "insensitive",
@@ -161,19 +197,20 @@ export async function createOrderAction(input: CreateOrderInput) {
             data: { totalOrders: { increment: 1 } },
           })
         : await tx.client.create({
-            data: { fullName: clientName, totalOrders: 1 },
+            data: { userId, fullName: clientName, totalOrders: 1 },
           });
       clientId = client.id;
     }
 
     return tx.order.create({
       data: {
+        userId,
         orderNumber,
         status: OrderStatus.RECU,
         paymentMethod,
         total,
         dueDate,
-        cashierId: input.cashierId,
+        cashierId: userId,
         clientId,
         items: {
           create: input.items.map((item) => ({
@@ -191,6 +228,8 @@ export async function createOrderAction(input: CreateOrderInput) {
 
   revalidatePath("/caisse");
   revalidatePath("/clients");
+  revalidatePath("/calendrier");
+  revalidatePath("/notifications");
 
   return {
     id: order.id,
@@ -199,8 +238,39 @@ export async function createOrderAction(input: CreateOrderInput) {
   };
 }
 
-export async function getOrdersAction() {
+export async function getCalendarOrderEventsAction() {
+  const userId = await requireAccountUserId();
   const orders = await prisma.order.findMany({
+    where: { userId, status: { not: OrderStatus.ANNULE } },
+    orderBy: { dueDate: "asc" },
+    select: {
+      id: true,
+      orderNumber: true,
+      dueDate: true,
+      status: true,
+      total: true,
+      client: {
+        select: {
+          fullName: true,
+        },
+      },
+    },
+  });
+
+  return orders.map((order) => ({
+    id: order.id,
+    orderNumber: order.orderNumber,
+    dueDate: order.dueDate.toISOString(),
+    status: order.status,
+    total: Number(order.total),
+    clientName: order.client?.fullName ?? null,
+  }));
+}
+
+export async function getOrdersAction() {
+  const userId = await requireAccountUserId();
+  const orders = await prisma.order.findMany({
+    where: { userId },
     orderBy: { createdAt: "desc" },
     include: {
       client: true,
@@ -239,13 +309,17 @@ export async function getOrdersAction() {
 }
 
 export async function updateOrderStatusAction(orderId: string, targetStatus?: OrderStatus) {
-  const current = await prisma.order.findUnique({
-    where: { id: orderId },
+  const userId = await requireAccountUserId();
+  const current = await prisma.order.findFirst({
+    where: { id: orderId, userId },
     select: { id: true, status: true },
   });
 
   if (!current) {
     throw new Error("Commande introuvable.");
+  }
+  if (current.status === OrderStatus.ANNULE) {
+    throw new Error("Commande annulée : statut non modifiable.");
   }
 
   const currentIndex = statusFlow.indexOf(current.status);
@@ -258,25 +332,120 @@ export async function updateOrderStatusAction(orderId: string, targetStatus?: Or
   });
 
   revalidatePath("/suivi");
+  revalidatePath("/notifications");
   return updated;
 }
 
+type CancelOrderInput = {
+  orderId: string;
+  reason: string;
+};
+
+export async function cancelOrderAction(input: CancelOrderInput) {
+  const userId = await requireAccountUserId();
+  const reason = input.reason.trim();
+  if (!reason) {
+    throw new Error("La raison d'annulation est obligatoire.");
+  }
+
+  const order = await prisma.order.findFirst({
+    where: { id: input.orderId, userId },
+    select: {
+      id: true,
+      orderNumber: true,
+      total: true,
+      status: true,
+    },
+  });
+
+  if (!order) {
+    throw new Error("Commande introuvable.");
+  }
+  if (order.status === OrderStatus.LIVRE) {
+    throw new Error("Impossible d'annuler une commande déjà livrée.");
+  }
+  if (order.status === OrderStatus.ANNULE) {
+    throw new Error("Commande déjà annulée.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.order.update({
+      where: { id: order.id },
+      data: { status: OrderStatus.ANNULE },
+    });
+    await tx.cancelledOrderAudit.create({
+      data: {
+        userId,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        reason,
+        actorId: userId,
+        lostAmount: Number(order.total),
+      },
+    });
+  });
+
+  await createNotification({
+    userId,
+    type: NotificationCategory.SECURITY_AUDIT,
+    priority: NotificationPriority.CRITICAL,
+    title: "Commande annulée",
+    message: `${order.orderNumber} annulée. Raison : ${reason}. Montant perdu : ${Number(order.total).toFixed(0)} DH.`,
+    link: "/notifications/commandes-annulees",
+    metadata: {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      reason,
+      lostAmount: Number(order.total),
+      actorId: userId,
+    },
+  });
+
+  revalidatePath("/suivi");
+  revalidatePath("/notifications");
+  revalidatePath("/notifications/commandes-annulees");
+  return { ok: true as const, orderNumber: order.orderNumber };
+}
+
+export async function listCancelledOrdersAuditAction() {
+  const userId = await requireAccountUserId();
+  const rows = await prisma.cancelledOrderAudit.findMany({
+    where: { userId },
+    orderBy: { cancelledAt: "desc" },
+    take: 500,
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    orderId: row.orderId,
+    orderNumber: row.orderNumber,
+    reason: row.reason,
+    actorId: row.actorId,
+    lostAmount: Number(row.lostAmount),
+    cancelledAt: row.cancelledAt.toISOString(),
+  }));
+}
+
 export async function createCategoryAction(input: CreateCategoryInput) {
+  const userId = await requireAccountUserId();
   const name = input.name.trim();
   if (!name) {
     throw new Error("Le nom de categorie est requis.");
   }
+  const nameAr = input.nameAr?.trim() || null;
   try {
     const created = await prisma.category.create({
       data: {
+        userId,
         name,
+        nameAr,
         icon: input.icon?.trim() || "Package",
         isActive: true,
       },
-      select: { id: true, name: true, icon: true },
+      select: { id: true, name: true, nameAr: true, icon: true },
     });
 
     revalidatePath("/caisse");
+    revalidatePath("/categories");
     return created;
   } catch (error) {
     throw toSafeDbError(error, "creation categorie");
@@ -285,7 +454,9 @@ export async function createCategoryAction(input: CreateCategoryInput) {
 
 export async function createProductAction(input: CreateProductInput) {
   const name = input.name.trim();
+  const nameAr = input.nameAr?.trim() || null;
   const optionLabel = input.optionLabel.trim();
+  const optionLabelAr = input.optionLabelAr?.trim() || null;
   const imageUrl = input.imageUrl?.trim() || null;
 
   if (!name || !input.categoryId || !optionLabel) {
@@ -295,6 +466,16 @@ export async function createProductAction(input: CreateProductInput) {
   if (input.basePrice <= 0) {
     throw new Error("Le prix de base doit etre superieur a 0.");
   }
+
+  const userId = await requireAccountUserId();
+  const category = await prisma.category.findFirst({
+    where: { id: input.categoryId, userId },
+    select: { id: true },
+  });
+  if (!category) {
+    throw new Error("Categorie introuvable.");
+  }
+
   if (imageUrl) {
     const isDataImage = imageUrl.startsWith("data:image/");
     if (!isDataImage) {
@@ -331,6 +512,7 @@ export async function createProductAction(input: CreateProductInput) {
     const created = await prisma.product.create({
       data: {
         name,
+        nameAr,
         barcode,
         imageUrl,
         basePrice: input.basePrice,
@@ -339,6 +521,7 @@ export async function createProductAction(input: CreateProductInput) {
         options: {
           create: {
             label: optionLabel,
+            labelAr: optionLabelAr,
             priceModifier: 0,
           },
         },
@@ -349,10 +532,12 @@ export async function createProductAction(input: CreateProductInput) {
     });
 
     revalidatePath("/caisse");
+    revalidatePath("/categories");
 
     return {
       id: created.id,
       name: created.name,
+      nameAr: created.nameAr,
       barcode: created.barcode,
       imageUrl: created.imageUrl,
       basePrice: Number(created.basePrice),
@@ -360,6 +545,7 @@ export async function createProductAction(input: CreateProductInput) {
       options: created.options.map((option) => ({
         id: option.id,
         label: option.label,
+        labelAr: option.labelAr,
         priceModifier: Number(option.priceModifier),
       })),
     };
@@ -368,7 +554,133 @@ export async function createProductAction(input: CreateProductInput) {
   }
 }
 
+type UpdateCategoryInput = { id: string; name: string; icon?: string; nameAr?: string | null };
+
+export async function updateCategoryAction(input: UpdateCategoryInput) {
+  const userId = await requireAccountUserId();
+  const name = input.name.trim();
+  if (!input.id || !name) {
+    throw new Error("Categorie invalide.");
+  }
+  try {
+    const updated = await prisma.category.updateMany({
+      where: { id: input.id, userId },
+      data: {
+        name,
+        nameAr: input.nameAr === undefined ? undefined : input.nameAr?.trim() || null,
+        icon: input.icon?.trim() || "Package",
+      },
+    });
+    if (updated.count === 0) {
+      throw new Error("Categorie introuvable.");
+    }
+    revalidatePath("/caisse");
+    revalidatePath("/categories");
+  } catch (error) {
+    throw toSafeDbError(error, "modification categorie");
+  }
+}
+
+export async function archiveCategoryAction(categoryId: string) {
+  if (!categoryId?.trim()) {
+    throw new Error("Categorie invalide.");
+  }
+  const userId = await requireAccountUserId();
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.product.updateMany({
+        where: { categoryId, category: { userId } },
+        data: { isActive: false },
+      });
+      await tx.category.updateMany({
+        where: { id: categoryId, userId },
+        data: { isActive: false },
+      });
+    });
+    revalidatePath("/caisse");
+    revalidatePath("/categories");
+  } catch (error) {
+    throw toSafeDbError(error, "suppression categorie");
+  }
+}
+
+export async function updateProductAction(input: {
+  id: string;
+  name: string;
+  basePrice: number;
+  nameAr?: string | null;
+  optionLabelAr?: string | null;
+}) {
+  const userId = await requireAccountUserId();
+  const name = input.name.trim();
+  if (!input.id || !name) {
+    throw new Error("Article invalide.");
+  }
+  if (!Number.isFinite(input.basePrice) || input.basePrice <= 0) {
+    throw new Error("Le prix doit etre superieur a 0.");
+  }
+  try {
+    const owned = await prisma.product.findFirst({
+      where: { id: input.id, category: { userId } },
+      select: { id: true },
+    });
+    if (!owned) {
+      throw new Error("Article introuvable.");
+    }
+    await prisma.product.update({
+      where: { id: owned.id },
+      data: {
+        name,
+        basePrice: input.basePrice,
+        nameAr: input.nameAr === undefined ? undefined : input.nameAr?.trim() || null,
+      },
+    });
+    if (input.optionLabelAr !== undefined) {
+      const firstOption = await prisma.productServiceOption.findFirst({
+        where: { productId: owned.id },
+        orderBy: { id: "asc" },
+        select: { id: true },
+      });
+      if (firstOption) {
+        await prisma.productServiceOption.update({
+          where: { id: firstOption.id },
+          data: { labelAr: input.optionLabelAr?.trim() || null },
+        });
+      }
+    }
+    revalidatePath("/caisse");
+    revalidatePath("/categories");
+  } catch (error) {
+    throw toSafeDbError(error, "modification article");
+  }
+}
+
+export async function archiveProductAction(productId: string) {
+  if (!productId?.trim()) {
+    throw new Error("Article invalide.");
+  }
+  const userId = await requireAccountUserId();
+  try {
+    const owned = await prisma.product.findFirst({
+      where: { id: productId, category: { userId } },
+      select: { id: true },
+    });
+    if (!owned) {
+      throw new Error("Article introuvable.");
+    }
+    await prisma.product.update({
+      where: { id: owned.id },
+      data: { isActive: false },
+    });
+    revalidatePath("/caisse");
+    revalidatePath("/categories");
+  } catch (error) {
+    throw toSafeDbError(error, "suppression article");
+  }
+}
+
 export async function createClientAction(input: CreateClientInput) {
+  const userId = await requireAccountUserId();
   const fullName = input.fullName.trim();
   const phone = input.phone?.trim() || null;
   const email = input.email?.trim() || null;
@@ -378,8 +690,28 @@ export async function createClientAction(input: CreateClientInput) {
   }
 
   try {
+    if (phone) {
+      const dupPhone = await prisma.client.findFirst({
+        where: { userId, phone },
+        select: { id: true },
+      });
+      if (dupPhone) {
+        throw new Error("Un client avec ce numero existe deja.");
+      }
+    }
+    if (email) {
+      const dupEmail = await prisma.client.findFirst({
+        where: { userId, email },
+        select: { id: true },
+      });
+      if (dupEmail) {
+        throw new Error("Un client avec cet email existe deja.");
+      }
+    }
+
     const created = await prisma.client.create({
       data: {
+        userId,
         fullName,
         phone,
         email,
@@ -394,9 +726,105 @@ export async function createClientAction(input: CreateClientInput) {
       phone: created.phone,
       email: created.email,
       totalOrders: created.totalOrders,
+      storeCredit: Number(created.storeCredit),
     };
   } catch (error) {
     throw toSafeDbError(error, "creation client");
+  }
+}
+
+type UpdateClientInput = {
+  clientId: string;
+  fullName: string;
+  phone?: string | null;
+  email?: string | null;
+  storeCredit: number;
+};
+
+export async function updateClientAction(input: UpdateClientInput) {
+  const userId = await requireAccountUserId();
+  const fullName = input.fullName.trim();
+  if (!fullName) {
+    throw new Error("Le nom du client est requis.");
+  }
+  const phone = input.phone?.trim() || null;
+  const email = input.email?.trim() || null;
+
+  if (!Number.isFinite(input.storeCredit) || input.storeCredit < 0) {
+    throw new Error("Le credit magasin doit etre zero ou positif.");
+  }
+
+  try {
+    const existing = await prisma.client.findFirst({
+      where: { id: input.clientId, userId },
+      select: { id: true, fullName: true, storeCredit: true },
+    });
+    if (!existing) {
+      throw new Error("Client introuvable.");
+    }
+    const previousCredit = Number(existing.storeCredit);
+
+    if (phone) {
+      const dupPhone = await prisma.client.findFirst({
+        where: {
+          userId,
+          phone,
+          id: { not: input.clientId },
+        },
+        select: { id: true },
+      });
+      if (dupPhone) {
+        throw new Error("Un autre client utilise ce numero.");
+      }
+    }
+    if (email) {
+      const dupEmail = await prisma.client.findFirst({
+        where: {
+          userId,
+          email,
+          id: { not: input.clientId },
+        },
+        select: { id: true },
+      });
+      if (dupEmail) {
+        throw new Error("Un autre client utilise cet email.");
+      }
+    }
+
+    await prisma.client.update({
+      where: { id: input.clientId },
+      data: {
+        fullName,
+        phone,
+        email,
+        storeCredit: input.storeCredit,
+      },
+    });
+
+    if (previousCredit !== input.storeCredit) {
+      await createNotification({
+        userId,
+        type: NotificationCategory.SECURITY_AUDIT,
+        priority: NotificationPriority.CRITICAL,
+        title: "Modification du solde client",
+        message: `${existing.fullName} : crédit magasin ${previousCredit.toFixed(0)} → ${input.storeCredit.toFixed(0)} DH (hors paiement ticket).`,
+        link: "/clients",
+        metadata: {
+          clientId: input.clientId,
+          previousCredit,
+          nextCredit: input.storeCredit,
+        },
+      });
+    }
+
+    revalidatePath("/clients");
+    revalidatePath("/notifications");
+    return { ok: true as const };
+  } catch (error) {
+    if (error instanceof Error && !error.message.startsWith("Erreur base de donnees")) {
+      throw error;
+    }
+    throw toSafeDbError(error, "modification client");
   }
 }
 
@@ -406,8 +834,17 @@ export async function getClientOrderHistoryAction(clientId: string) {
   }
 
   try {
+    const userId = await requireAccountUserId();
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, userId },
+      select: { id: true },
+    });
+    if (!client) {
+      throw new Error("Client introuvable.");
+    }
+
     const orders = await prisma.order.findMany({
-      where: { clientId },
+      where: { clientId, userId },
       orderBy: { createdAt: "desc" },
       take: 20,
       include: {
@@ -443,8 +880,9 @@ export async function sendClientInvoiceAction(clientId: string) {
   }
 
   try {
-    const client = await prisma.client.findUnique({
-      where: { id: clientId },
+    const userId = await requireAccountUserId();
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, userId },
       select: { id: true, fullName: true, email: true },
     });
 
@@ -456,7 +894,7 @@ export async function sendClientInvoiceAction(clientId: string) {
     }
 
     const latestOrder = await prisma.order.findFirst({
-      where: { clientId },
+      where: { clientId, userId },
       orderBy: { createdAt: "desc" },
       select: { orderNumber: true, total: true, createdAt: true },
     });
@@ -466,6 +904,18 @@ export async function sendClientInvoiceAction(clientId: string) {
     }
 
     // Placeholder: simulate invoice delivery until mailing service is wired.
+    const session = await getSessionUser();
+    if (session) {
+      await notifyInvoiceSentAction({
+        channel: "EMAIL",
+        clientName: client.fullName,
+        orderNumber: latestOrder.orderNumber,
+        recipient: client.email,
+      });
+    }
+
+    revalidatePath("/notifications");
+
     return {
       ok: true,
       recipient: client.email,
@@ -486,10 +936,28 @@ export async function deleteClientAction(clientId: string) {
   }
 
   try {
-    await prisma.client.delete({
-      where: { id: clientId },
+    const userId = await requireAccountUserId();
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, userId },
+      select: { id: true, fullName: true },
     });
+    if (!client) {
+      throw new Error("Client introuvable.");
+    }
+    await prisma.client.delete({ where: { id: client.id } });
+
+    await createNotification({
+      userId,
+      type: NotificationCategory.SECURITY_AUDIT,
+      priority: NotificationPriority.CRITICAL,
+      title: "Client supprimé",
+      message: `Le profil client "${client.fullName}" a été supprimé.`,
+      link: "/clients",
+      metadata: { clientId: client.id },
+    });
+
     revalidatePath("/clients");
+    revalidatePath("/notifications");
     return { ok: true };
   } catch (error) {
     throw toSafeDbError(error, "suppression client");
@@ -498,8 +966,9 @@ export async function deleteClientAction(clientId: string) {
 
 export async function getRecentClientOrdersAction() {
   try {
+    const userId = await requireAccountUserId();
     const orders = await prisma.order.findMany({
-      where: { clientId: { not: null } },
+      where: { userId, clientId: { not: null } },
       orderBy: { createdAt: "desc" },
       take: 8,
       include: {
@@ -529,11 +998,15 @@ export async function getRecentClientOrdersAction() {
 
 export async function getClientBalancesAction() {
   try {
+    const userId = await requireAccountUserId();
     const clients = await prisma.client.findMany({
+      where: { userId },
       select: {
         id: true,
+        storeCredit: true,
         orders: {
           where: {
+            userId,
             status: {
               not: OrderStatus.LIVRE,
             },
@@ -543,10 +1016,14 @@ export async function getClientBalancesAction() {
       },
     });
 
-    return clients.map((client) => ({
-      clientId: client.id,
-      balanceDue: client.orders.reduce((sum, order) => sum + Number(order.total), 0),
-    }));
+    return clients.map((client) => {
+      const ordersOwed = client.orders.reduce((sum, order) => sum + Number(order.total), 0);
+      const balanceDue = Math.max(0, ordersOwed - Number(client.storeCredit));
+      return {
+        clientId: client.id,
+        balanceDue,
+      };
+    });
   } catch (error) {
     throw toSafeDbError(error, "solde clients");
   }
@@ -558,14 +1035,16 @@ export async function getClientDetailsAction(clientId: string) {
   }
 
   try {
-    const client = await prisma.client.findUnique({
-      where: { id: clientId },
+    const userId = await requireAccountUserId();
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, userId },
       select: {
         id: true,
         fullName: true,
         phone: true,
         email: true,
         totalOrders: true,
+        storeCredit: true,
         createdAt: true,
       },
     });
@@ -575,7 +1054,7 @@ export async function getClientDetailsAction(clientId: string) {
     }
 
     const orders = await prisma.order.findMany({
-      where: { clientId },
+      where: { clientId, userId },
       orderBy: { createdAt: "desc" },
       include: {
         items: {
@@ -584,9 +1063,11 @@ export async function getClientDetailsAction(clientId: string) {
       },
     });
 
-    const balanceDue = orders
+    const ordersOwed = orders
       .filter((order) => order.status !== OrderStatus.LIVRE)
       .reduce((sum, order) => sum + Number(order.total), 0);
+    const storeCredit = Number(client.storeCredit);
+    const balanceDue = Math.max(0, ordersOwed - storeCredit);
 
     return {
       client: {
@@ -596,6 +1077,8 @@ export async function getClientDetailsAction(clientId: string) {
         email: client.email,
         totalOrders: client.totalOrders,
         createdAt: client.createdAt.toISOString(),
+        storeCredit,
+        ordersOwed,
         balanceDue,
       },
       orders: orders.map((order) => ({
