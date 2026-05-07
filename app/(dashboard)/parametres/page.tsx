@@ -1,20 +1,18 @@
 "use client";
 
 import { ReportProblemKind } from "@prisma/client";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import {
-  Building2,
-  FileText,
-  Flag,
-  HardDrive,
-  PanelLeftClose,
-  PanelLeftOpen,
-  SlidersHorizontal,
-  Upload,
-  UserCog,
-} from "lucide-react";
+import { Suspense, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Flag, SlidersHorizontal, Upload } from "lucide-react";
 
 import { submitAppReportAction } from "@/app/actions/report";
+import {
+  createStaffAccountAction,
+  deleteStaffAccountAction,
+  listStaffAccountsAction,
+  updateStaffAccountAccessAction,
+  type StaffAccountRow,
+} from "@/app/actions/staff-accounts";
 import { OperationalAlertsCard } from "@/components/settings/operational-alerts-card";
 import { PageAccessDialog } from "@/components/settings/page-access-dialog";
 import { HardwareStatusStrip } from "@/components/hardware/hardware-status-strip";
@@ -35,6 +33,7 @@ import {
   FULL_PAGE_ACCESS,
   effectivePageAccess,
 } from "@/lib/navigation-page-access";
+import { cn } from "@/lib/utils";
 import { getNavigationContext, setNavigationContext } from "@/lib/navigation-context";
 import {
   clearHardwareLogs,
@@ -48,7 +47,22 @@ type SettingsSection =
   | "factures-en-ligne"
   | "comptes"
   | "peripheriques"
-  | "logs";
+  | "logs"
+  | "signalement";
+
+const SETTINGS_SECTION_IDS = new Set<string>([
+  "entreprise",
+  "factures",
+  "factures-en-ligne",
+  "comptes",
+  "peripheriques",
+  "logs",
+  "signalement",
+]);
+
+function isSettingsSection(value: string | null): value is SettingsSection {
+  return value != null && SETTINGS_SECTION_IDS.has(value);
+}
 
 type CompanyInfo = {
   commercialName: string;
@@ -74,8 +88,13 @@ type OnlineInvoiceTemplates = {
   emailSubjectTemplate: string;
   emailBodyTemplate: string;
 };
+type SmtpSettings = {
+  email: string;
+  pass: string;
+};
 
 const LEGACY_SETTINGS_STORAGE_KEY = "gc-settings-v1";
+const SMTP_SETTINGS_STORAGE_KEY = "gc-smtp-settings-v1";
 
 function settingsStorageKeyForUser(userId: string) {
   return `${LEGACY_SETTINGS_STORAGE_KEY}-${userId}`;
@@ -90,10 +109,11 @@ const REPORT_KIND_OPTIONS: { value: ReportProblemKind; label: string }[] = [
   { value: ReportProblemKind.AUTRE, label: "Autre" },
 ];
 
-export default function ParametresPage() {
+function ParametresPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [settingsUserId, setSettingsUserId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("entreprise");
-  const [isMenuOpen, setIsMenuOpen] = useState(true);
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState<HardwareLogEntry[]>([]);
   const [logoFileName, setLogoFileName] = useState("");
@@ -104,16 +124,20 @@ export default function ParametresPage() {
   const [accounts, setAccounts] = useState<AccountItem[]>([]);
   const [newAccount, setNewAccount] = useState({
     fullName: "",
-    username: "",
-    email: "",
     role: "CAISSIER" as AccountRole,
   });
+  const [newAccountPassword, setNewAccountPassword] = useState("");
   const [newAccountPageAccess, setNewAccountPageAccess] = useState<PageAccess>(() => ({
     ...DEFAULT_CAISSIER_PAGE_ACCESS,
   }));
   const [pageAccessOpen, setPageAccessOpen] = useState(false);
   const [pageAccessEditId, setPageAccessEditId] = useState<string | null>(null);
   const [navPreviewValue, setNavPreviewValue] = useState<string>("full");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [accountToDelete, setAccountToDelete] = useState<AccountItem | null>(null);
+  const [deleteAdminPassword, setDeleteAdminPassword] = useState("");
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteDialogFeedback, setDeleteDialogFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const prevRoleRef = useRef<AccountRole>("CAISSIER");
   const accountsPersistReady = useRef(false);
 
@@ -146,6 +170,10 @@ export default function ParametresPage() {
     emailSubjectTemplate: "Votre facture {invoiceNumber} - {pressingName}",
     emailBodyTemplate:
       "Bonjour {clientName},\n\nVeuillez trouver votre facture {invoiceNumber}.\nMontant total: {total}.\n\nMerci,\n{pressingName}",
+  });
+  const [smtpSettings, setSmtpSettings] = useState<SmtpSettings>({
+    email: "",
+    pass: "",
   });
 
   function handleReportSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -196,6 +224,7 @@ export default function ParametresPage() {
         companyInfo?: CompanyInfo;
         invoiceInfo?: InvoiceInfo;
         onlineInvoiceTemplates?: OnlineInvoiceTemplates;
+        smtpSettings?: SmtpSettings;
         accounts?: AccountItem[];
         logoFileName?: string;
         logoPreviewUrl?: string | null;
@@ -203,6 +232,7 @@ export default function ParametresPage() {
       if (parsed.companyInfo) setCompanyInfo(parsed.companyInfo);
       if (parsed.invoiceInfo) setInvoiceInfo(parsed.invoiceInfo);
       if (parsed.onlineInvoiceTemplates) setOnlineInvoiceTemplates(parsed.onlineInvoiceTemplates);
+      if (parsed.smtpSettings) setSmtpSettings(parsed.smtpSettings);
       if (parsed.accounts) setAccounts(parsed.accounts);
       if (parsed.logoFileName) setLogoFileName(parsed.logoFileName);
       if (parsed.logoPreviewUrl) setLogoPreviewUrl(parsed.logoPreviewUrl);
@@ -213,10 +243,46 @@ export default function ParametresPage() {
   }, [settingsUserId]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = localStorage.getItem(SMTP_SETTINGS_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Partial<SmtpSettings>;
+      setSmtpSettings((prev) => ({
+        email: parsed.email ?? prev.email,
+        pass: parsed.pass ?? prev.pass,
+      }));
+    } catch {
+      localStorage.removeItem(SMTP_SETTINGS_STORAGE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!settingsUserId) return;
+    void listStaffAccountsAction()
+      .then((rows) => setAccounts(rows.map(mapStaffToAccount)))
+      .catch(() => setAccounts([]));
+  }, [settingsUserId]);
+
+  useEffect(() => {
     const ctx = getNavigationContext();
     if (ctx.mode === "full") setNavPreviewValue("full");
     else setNavPreviewValue(ctx.accountId);
   }, []);
+
+  useEffect(() => {
+    const raw = searchParams.get("section");
+    if (!raw || !isSettingsSection(raw)) {
+      router.replace("/parametres?section=entreprise", { scroll: false });
+      return;
+    }
+    setActiveSection(raw);
+  }, [router, searchParams]);
+
+  const goToSection = (sectionId: SettingsSection) => {
+    setActiveSection(sectionId);
+    router.replace(`/parametres?section=${sectionId}`, { scroll: false });
+  };
 
   useEffect(() => {
     const prev = prevRoleRef.current;
@@ -247,14 +313,16 @@ export default function ParametresPage() {
   }, [logoPreviewUrl]);
 
   const sections = useMemo(
-    () => [
-      { id: "entreprise" as const, label: "Informations entreprise", icon: Building2 },
-      { id: "factures" as const, label: "Factures", icon: FileText },
-      { id: "factures-en-ligne" as const, label: "Factures en ligne", icon: FileText },
-      { id: "comptes" as const, label: "Gestion des comptes", icon: UserCog },
-      { id: "peripheriques" as const, label: "Périphériques", icon: HardDrive },
-      { id: "logs" as const, label: "Console hardware", icon: HardDrive },
-    ],
+    () =>
+      [
+        { id: "entreprise" as const, label: "Entreprise" },
+        { id: "factures" as const, label: "Factures" },
+        { id: "comptes" as const, label: "Comptes" },
+        { id: "factures-en-ligne" as const, label: "Factures en ligne" },
+        { id: "peripheriques" as const, label: "Périphériques" },
+        { id: "logs" as const, label: "Console" },
+        { id: "signalement" as const, label: "Signalement" },
+      ] as const,
     [],
   );
 
@@ -276,48 +344,77 @@ export default function ParametresPage() {
     setLogoFileName(file.name);
   };
 
-  const scrollToSection = (sectionId: SettingsSection) => {
-    setActiveSection(sectionId);
-    const element = document.getElementById(`section-${sectionId}`);
-    if (element) {
-      element.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  };
+  const mapStaffToAccount = (row: StaffAccountRow): AccountItem => ({
+    id: row.id,
+    fullName: row.fullName,
+    role: row.role,
+    createdAt: row.createdAt,
+    lastLoginAt: row.lastLoginAt,
+    sessionDurationMinutes: null,
+    pageAccess: row.pageAccess,
+  });
 
   const addAccount = () => {
     const fullName = newAccount.fullName.trim();
-    const username = newAccount.username.trim();
-    const email = newAccount.email.trim().toLowerCase();
-
-    if (!fullName || !username || !email) {
-      setAccountMessage("Nom, identifiant et email sont requis.");
+    if (!fullName || !newAccountPassword.trim()) {
+      setAccountMessage("Nom et mot de passe sont requis.");
       return;
     }
-
-    const duplicate = accounts.some(
-      (item) => item.username.toLowerCase() === username.toLowerCase() || item.email.toLowerCase() === email,
-    );
-    if (duplicate) {
-      setAccountMessage("Un compte avec cet identifiant ou email existe déjà.");
-      return;
-    }
-
-    const created: AccountItem = {
-      id: `acc-${Date.now()}`,
-      fullName,
-      username,
-      email,
-      role: newAccount.role,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: null,
-      sessionDurationMinutes: null,
-      pageAccess: newAccount.role === "CAISSIER" ? newAccountPageAccess : FULL_PAGE_ACCESS,
+    const run = async () => {
+      try {
+        await createStaffAccountAction({
+          fullName,
+          role: newAccount.role,
+          password: newAccountPassword.trim(),
+          pageAccess: newAccount.role === "CAISSIER" ? newAccountPageAccess : FULL_PAGE_ACCESS,
+        });
+        const rows = await listStaffAccountsAction();
+        setAccounts(rows.map(mapStaffToAccount));
+        setNewAccount({ fullName: "", role: "CAISSIER" });
+        setNewAccountPassword("");
+        setNewAccountPageAccess({ ...DEFAULT_CAISSIER_PAGE_ACCESS });
+        setAccountMessage("Compte ajouté.");
+        window.dispatchEvent(new CustomEvent("gc-settings-updated"));
+      } catch (e) {
+        setAccountMessage(e instanceof Error ? e.message : "Impossible d’ajouter le compte.");
+      }
     };
-    setAccounts((prev) => [created, ...prev]);
-    setNewAccount({ fullName: "", username: "", email: "", role: "CAISSIER" });
-    setNewAccountPageAccess({ ...DEFAULT_CAISSIER_PAGE_ACCESS });
-    setAccountMessage("Compte ajouté.");
-    window.dispatchEvent(new CustomEvent("gc-settings-updated"));
+    void run();
+  };
+
+  const deleteAccount = (account: AccountItem) => {
+    setAccountToDelete(account);
+    setDeleteAdminPassword("");
+    setDeleteDialogFeedback(null);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteAccount = () => {
+    if (!accountToDelete) return;
+    if (!deleteAdminPassword.trim()) {
+      setDeleteDialogFeedback({ ok: false, message: "Le mot de passe admin est requis." });
+      return;
+    }
+    const run = async () => {
+      setDeletePending(true);
+      setDeleteDialogFeedback(null);
+      try {
+        await deleteStaffAccountAction({ id: accountToDelete.id, adminPassword: deleteAdminPassword.trim() });
+        const rows = await listStaffAccountsAction();
+        setAccounts(rows.map(mapStaffToAccount));
+        setDeleteAdminPassword("");
+        setDeleteDialogFeedback({ ok: true, message: `Compte « ${accountToDelete.fullName} » supprimé.` });
+        setAccountMessage(`Compte « ${accountToDelete.fullName} » supprimé.`);
+        window.dispatchEvent(new CustomEvent("gc-settings-updated"));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Impossible de supprimer le compte.";
+        setDeleteDialogFeedback({ ok: false, message });
+        setAccountMessage(message);
+      } finally {
+        setDeletePending(false);
+      }
+    };
+    void run();
   };
 
   const currentSnapshot = useMemo(
@@ -326,11 +423,12 @@ export default function ParametresPage() {
         companyInfo,
         invoiceInfo,
         onlineInvoiceTemplates,
+        smtpSettings,
         accounts,
         logoFileName,
         logoPreviewUrl,
       }),
-    [companyInfo, invoiceInfo, onlineInvoiceTemplates, accounts, logoFileName, logoPreviewUrl],
+    [companyInfo, invoiceInfo, onlineInvoiceTemplates, smtpSettings, accounts, logoFileName, logoPreviewUrl],
   );
 
   /** Après l’hydratation initiale, synchronise les comptes vers le stockage pour l’aperçu du menu. */
@@ -347,17 +445,19 @@ export default function ParametresPage() {
           companyInfo,
           invoiceInfo,
           onlineInvoiceTemplates,
+          smtpSettings,
           accounts,
           logoFileName,
           logoPreviewUrl,
         }),
       );
+      localStorage.setItem(SMTP_SETTINGS_STORAGE_KEY, JSON.stringify(smtpSettings));
       window.dispatchEvent(new CustomEvent("gc-settings-updated"));
     } catch {
       // quota / mode privé
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- déclenché sur les comptes ; le snapshot joint lit l’état courant au même rendu.
-  }, [accounts, settingsUserId]);
+  }, [accounts, settingsUserId, smtpSettings, companyInfo, invoiceInfo, onlineInvoiceTemplates, logoFileName, logoPreviewUrl]);
 
   const hasChanges = currentSnapshot !== lastSavedSnapshot;
 
@@ -368,6 +468,7 @@ export default function ParametresPage() {
     }
     try {
       localStorage.setItem(settingsStorageKeyForUser(settingsUserId), currentSnapshot);
+      localStorage.setItem(SMTP_SETTINGS_STORAGE_KEY, JSON.stringify(smtpSettings));
       setLastSavedSnapshot(currentSnapshot);
       setSaveMessage("Informations enregistrées.");
       window.dispatchEvent(new CustomEvent("gc-settings-updated"));
@@ -388,101 +489,52 @@ export default function ParametresPage() {
     : newAccount.role === "ADMIN";
 
   return (
-    <div className="space-y-0 md:flex md:items-start md:gap-4">
-      <div
-        className={`hidden border-r border-slate-200 bg-white md:sticky md:top-6 md:block md:h-[calc(100dvh-3rem)] md:shrink-0 ${
-          isMenuOpen ? "md:w-[210px]" : "md:w-[86px]"
-        }`}
-      >
-        <div className="flex h-full flex-col">
-          <div className="border-b border-slate-200 p-3">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsMenuOpen((value) => !value)}
-              className="min-h-10 w-full justify-center"
-            >
-              {isMenuOpen ? (
-                <>
-                  <PanelLeftClose className="h-5 w-5" />
-                  <span className="ml-2">Menu</span>
-                </>
-              ) : (
-                <PanelLeftOpen className="h-6 w-6" />
-              )}
+    <div className="mx-auto w-full max-w-6xl min-w-0 space-y-8">
+      <header className="space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-3xl font-bold tracking-tight text-slate-900">Paramètres</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Gérez votre compte, vos préférences et la configuration de votre pressing.
+            </p>
+          </div>
+          <div className="flex w-full shrink-0 flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+            {saveMessage ? <p className="text-xs text-slate-500 sm:text-right">{saveMessage}</p> : null}
+            <Button type="button" className="w-full sm:w-auto" onClick={handleSaveSettings} disabled={!hasChanges}>
+              Enregistrer
             </Button>
           </div>
-
-          <div className="flex-1 space-y-2 overflow-y-auto p-3">
+        </div>
+        <div className="h-px w-full bg-slate-200" aria-hidden />
+        <nav className="-mx-1 overflow-x-auto pb-px [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label="Sections paramètres">
+          <ul className="flex min-w-min gap-4 border-b border-slate-200 px-1 sm:gap-8">
             {sections.map((section) => {
-              const Icon = section.icon;
+              const isActive = activeSection === section.id;
               return (
-                <button
-                  key={section.id}
-                  type="button"
-                  onClick={() => scrollToSection(section.id)}
-                  className={`flex w-full items-center rounded-xl border px-3 py-2 text-left text-sm transition ${
-                    activeSection === section.id
-                      ? "border-sky-300 bg-sky-50 text-sky-700"
-                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  } ${isMenuOpen ? "gap-2" : "justify-center px-2"}`}
-                  title={section.label}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {isMenuOpen ? <span className="line-clamp-2">{section.label}</span> : null}
-                </button>
+                <li key={section.id} className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => goToSection(section.id)}
+                    className={cn(
+                      "-mb-px inline-flex border-b-2 pb-3 text-sm transition-colors",
+                      isActive
+                        ? "border-slate-900 font-semibold text-slate-900"
+                        : "border-transparent font-normal text-slate-400 hover:text-slate-600",
+                    )}
+                  >
+                    {section.label}
+                  </button>
+                </li>
               );
             })}
-          </div>
-        </div>
-      </div>
+          </ul>
+        </nav>
+      </header>
 
-      <div
-        className="mx-auto w-full max-w-6xl min-w-0 flex-1 space-y-4 px-0"
-      >
-        <div className="md:hidden">
-          <Card>
-            <CardContent className="space-y-2 p-3">
-              {sections.map((section) => {
-                const Icon = section.icon;
-                return (
-                  <button
-                    key={section.id}
-                    type="button"
-                    onClick={() => scrollToSection(section.id)}
-                    className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition ${
-                      activeSection === section.id
-                        ? "border-sky-300 bg-sky-50 text-sky-700"
-                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <span>{section.label}</span>
-                  </button>
-                );
-              })}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div id="section-entreprise" className="scroll-mt-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
-            <div className="max-w-2xl">
-              <h1 className="text-xl font-bold text-slate-900 md:text-2xl">Parametres</h1>
-              <p className="text-sm text-slate-500">
-                Gérez les informations de votre pressing, la personnalisation des factures et le matériel.
-              </p>
-            </div>
-            <div className="flex w-full items-center justify-end gap-2 md:ml-auto md:w-auto">
-              {saveMessage ? <p className="text-xs text-slate-500">{saveMessage}</p> : null}
-              <Button type="button" className="w-full sm:w-auto" onClick={handleSaveSettings} disabled={!hasChanges}>
-                Enregistrer
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <Card>
+      <div className="space-y-4">
+        {activeSection === "entreprise" ? (
+          <>
+            <Card>
           <CardHeader>
             <CardTitle>Informations de l&apos;entreprise</CardTitle>
             <CardDescription>
@@ -536,8 +588,11 @@ export default function ParametresPage() {
         </Card>
 
         <OperationalAlertsCard />
+          </>
+        ) : null}
 
-        <Card id="section-factures" className="scroll-mt-4">
+        {activeSection === "factures" ? (
+        <Card>
           <CardHeader>
             <CardTitle>Factures</CardTitle>
             <CardDescription>
@@ -620,13 +675,15 @@ export default function ParametresPage() {
             </div>
           </CardContent>
         </Card>
+        ) : null}
 
-        <Card id="section-comptes" className="scroll-mt-4">
+        {activeSection === "comptes" ? (
+        <Card>
           <CardHeader>
             <CardTitle>Gestion des comptes</CardTitle>
             <CardDescription>
-              Ajoutez des comptes Caissier et Admin. Pour chaque caissier, choisissez les pages visibles dans le menu
-              (par défaut : Caisse, Suivi, Clients).
+              Ajoutez des profils Caissier et Admin avec mot de passe. La connexion se fait avec un email unique
+              (principal) et le mot de passe du profil.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -668,19 +725,10 @@ export default function ParametresPage() {
                 className="min-h-11 rounded-xl border border-slate-300 px-3"
               />
               <input
-                value={newAccount.username}
-                onChange={(event) =>
-                  setNewAccount((prev) => ({ ...prev, username: event.target.value }))
-                }
-                placeholder="Identifiant"
-                className="min-h-11 rounded-xl border border-slate-300 px-3"
-              />
-              <input
-                value={newAccount.email}
-                onChange={(event) =>
-                  setNewAccount((prev) => ({ ...prev, email: event.target.value }))
-                }
-                placeholder="Email"
+                value={newAccountPassword}
+                onChange={(event) => setNewAccountPassword(event.target.value)}
+                type="password"
+                placeholder="Mot de passe"
                 className="min-h-11 rounded-xl border border-slate-300 px-3"
               />
               <select
@@ -732,14 +780,14 @@ export default function ParametresPage() {
                 <thead>
                   <tr className="text-left text-sm text-slate-500">
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Nom</th>
-                    <th className="border-b border-slate-200 px-4 py-3 font-semibold">Identifiant</th>
-                    <th className="border-b border-slate-200 px-4 py-3 font-semibold">Email</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Rôle</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Pages</th>
+                    <th className="border-b border-slate-200 px-4 py-3 font-semibold">Créé le</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">Dernière connexion</th>
                     <th className="border-b border-slate-200 px-4 py-3 font-semibold">
                       Durée de connexion
                     </th>
+                    <th className="border-b border-slate-200 px-4 py-3 font-semibold">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -749,8 +797,6 @@ export default function ParametresPage() {
                         <td className="border-b border-slate-200 px-4 py-3 font-medium text-slate-900">
                           {account.fullName}
                         </td>
-                        <td className="border-b border-slate-200 px-4 py-3">{account.username}</td>
-                        <td className="border-b border-slate-200 px-4 py-3">{account.email}</td>
                         <td className="border-b border-slate-200 px-4 py-3">
                           <span
                             className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
@@ -782,6 +828,9 @@ export default function ParametresPage() {
                           )}
                         </td>
                         <td className="border-b border-slate-200 px-4 py-3">
+                          {new Date(account.createdAt).toLocaleString("fr-FR")}
+                        </td>
+                        <td className="border-b border-slate-200 px-4 py-3">
                           {account.lastLoginAt
                             ? new Date(account.lastLoginAt).toLocaleString("fr-FR")
                             : "Jamais connecté"}
@@ -790,6 +839,17 @@ export default function ParametresPage() {
                           {account.sessionDurationMinutes == null
                             ? "-"
                             : `${Math.floor(account.sessionDurationMinutes / 60)}h ${account.sessionDurationMinutes % 60}min`}
+                        </td>
+                        <td className="border-b border-slate-200 px-4 py-3">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="text-red-700 hover:bg-red-50 hover:text-red-800"
+                            onClick={() => deleteAccount(account)}
+                          >
+                            Supprimer
+                          </Button>
                         </td>
                       </tr>
                     ))
@@ -816,6 +876,9 @@ export default function ParametresPage() {
                   setAccounts((prev) =>
                     prev.map((a) => (a.id === pageAccessEditId ? { ...a, pageAccess: next } : a)),
                   );
+                  void updateStaffAccountAccessAction({ id: pageAccessEditId, pageAccess: next }).catch(() => {
+                    setAccountMessage("Impossible de sauvegarder les accès.");
+                  });
                 } else {
                   setNewAccountPageAccess(next);
                 }
@@ -827,10 +890,71 @@ export default function ParametresPage() {
                   : "Accès aux pages (nouveau caissier)"
               }
             />
+            <Dialog
+              open={deleteDialogOpen}
+              onOpenChange={(open) => {
+                setDeleteDialogOpen(open);
+                if (!open) {
+                  setDeleteAdminPassword("");
+                  setAccountToDelete(null);
+                  setDeletePending(false);
+                  setDeleteDialogFeedback(null);
+                }
+              }}
+            >
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Supprimer le compte</DialogTitle>
+                  <DialogDescription>
+                    {accountToDelete
+                      ? `Entrez le mot de passe admin pour supprimer « ${accountToDelete.fullName} ».`
+                      : "Entrez le mot de passe admin pour confirmer la suppression."}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <input
+                    type="password"
+                    value={deleteAdminPassword}
+                    onChange={(event) => setDeleteAdminPassword(event.target.value)}
+                    placeholder="Mot de passe admin"
+                    className="min-h-11 w-full rounded-xl border border-slate-300 px-3"
+                    disabled={deletePending || deleteDialogFeedback?.ok === true}
+                  />
+                  {deleteDialogFeedback ? (
+                    <p
+                      className={`text-sm ${
+                        deleteDialogFeedback.ok ? "text-emerald-700" : "text-red-700"
+                      }`}
+                    >
+                      {deleteDialogFeedback.message}
+                    </p>
+                  ) : null}
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setDeleteDialogOpen(false)}
+                      disabled={deletePending}
+                    >
+                      {deleteDialogFeedback?.ok ? "Fermer" : "Annuler"}
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={confirmDeleteAccount}
+                      disabled={deletePending || deleteDialogFeedback?.ok === true}
+                    >
+                      {deletePending ? "Suppression…" : "Confirmer"}
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
           </CardContent>
         </Card>
+        ) : null}
 
-        <Card id="section-factures-en-ligne" className="scroll-mt-4">
+        {activeSection === "factures-en-ligne" ? (
+        <Card>
           <CardHeader>
             <CardTitle>Factures en ligne</CardTitle>
             <CardDescription>
@@ -883,10 +1007,33 @@ export default function ParametresPage() {
                 className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
               />
             </div>
+            <div className="rounded-xl border border-slate-200 p-4">
+              <p className="text-sm font-semibold text-slate-800">Configuration SMTP</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Sert a l&apos;envoi des factures par email (mot de passe d&apos;application recommande).
+              </p>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <input
+                  value={smtpSettings.email}
+                  onChange={(event) => setSmtpSettings((prev) => ({ ...prev, email: event.target.value }))}
+                  placeholder="Email SMTP"
+                  className="min-h-11 rounded-xl border border-slate-300 px-3 text-sm"
+                />
+                <input
+                  type="password"
+                  value={smtpSettings.pass}
+                  onChange={(event) => setSmtpSettings((prev) => ({ ...prev, pass: event.target.value }))}
+                  placeholder="Mot de passe d'application"
+                  className="min-h-11 rounded-xl border border-slate-300 px-3 text-sm"
+                />
+              </div>
+            </div>
           </CardContent>
         </Card>
+        ) : null}
 
-        <Card id="section-peripheriques" className="scroll-mt-4">
+        {activeSection === "peripheriques" ? (
+        <Card>
           <CardHeader>
             <CardTitle>Périphériques</CardTitle>
             <CardDescription>Imprimante ticket et rappel pour le scanner USB.</CardDescription>
@@ -895,8 +1042,10 @@ export default function ParametresPage() {
             <HardwareStatusStrip />
           </CardContent>
         </Card>
+        ) : null}
 
-        <Card id="section-logs" className="scroll-mt-4">
+        {activeSection === "logs" ? (
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>Console hardware</CardTitle>
@@ -936,8 +1085,10 @@ export default function ParametresPage() {
             </CardContent>
           ) : null}
         </Card>
+        ) : null}
 
-        <Card id="section-signalement" className="scroll-mt-4 border-slate-200">
+        {activeSection === "signalement" ? (
+        <Card className="border-slate-200">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Flag className="h-5 w-5 shrink-0 text-rose-600" aria-hidden />
@@ -965,6 +1116,7 @@ export default function ParametresPage() {
             ) : null}
           </CardContent>
         </Card>
+        ) : null}
 
         <Dialog
           open={reportOpen}
@@ -1033,12 +1185,20 @@ export default function ParametresPage() {
           </DialogContent>
         </Dialog>
 
-        <div className="flex justify-end pb-2">
+        <div className="flex justify-end border-t border-slate-100 pt-6">
           <Button type="button" className="w-full sm:w-auto" onClick={handleSaveSettings} disabled={!hasChanges}>
             Enregistrer
           </Button>
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ParametresPage() {
+  return (
+    <Suspense fallback={<div className="py-12 text-center text-sm text-slate-500">Chargement des paramètres…</div>}>
+      <ParametresPageInner />
+    </Suspense>
   );
 }

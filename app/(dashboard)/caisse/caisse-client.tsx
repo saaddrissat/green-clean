@@ -35,7 +35,8 @@ import { buildEscPosTicket } from "@/lib/hardware/ticket-builder";
 import { categoryIconMap, categoryIconOptions } from "@/lib/pos/icon-map";
 import { getCompanySettings } from "@/lib/settings/company";
 
-type PaymentMethod = "CASH" | "CARD" | "MOBILE_MONEY";
+type PaymentMethod = "CASH" | "CARD" | "CREDIT";
+type PaymentTiming = "PAY_NOW" | "PAY_ON_PICKUP";
 
 type CatalogOption = { id: string; label: string; priceModifier: number };
 type CatalogProduct = {
@@ -56,6 +57,7 @@ type PrintPayload = {
   paymentMethod: string;
   items: CartItem[];
 };
+const EXPRESS_FEE_DH = 100;
 
 type CaisseClientProps = { categories: CatalogCategory[]; clients: ClientLite[]; dataError?: string };
 
@@ -68,11 +70,14 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
   const [newCustomerName, setNewCustomerName] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
+  const [paymentTiming, setPaymentTiming] = useState<PaymentTiming>("PAY_NOW");
+  const [expressFee, setExpressFee] = useState(0);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [checkoutMessage, setCheckoutMessage] = useState("");
   const [printError, setPrintError] = useState("");
   const [managementMessage, setManagementMessage] = useState("");
+  const [catalogManagementOpen, setCatalogManagementOpen] = useState(false);
   const [isRetryingDb, setIsRetryingDb] = useState(false);
 
   const [categoryName, setCategoryName] = useState("");
@@ -157,6 +162,8 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
     setNewCustomerName("");
     setDueDate("");
     setPaymentMethod("CASH");
+    setPaymentTiming("PAY_NOW");
+    setExpressFee(0);
     setPrintError("");
     setTimeout(() => setSheetOpen(false), 500);
   };
@@ -170,7 +177,8 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
       const order = await createOrderAction({
         clientName: newCustomerName || customerQuery,
         dueDate,
-        paymentMethod,
+        paymentMethod: paymentTiming === "PAY_ON_PICKUP" ? "CREDIT" : paymentMethod,
+        expressFee,
         items: cartItems.map((item) => ({
           productId: item.productId,
           productName: item.productName,
@@ -183,8 +191,8 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
         orderId: order.orderNumber,
         companyName: companySettings.companyName,
         dueDate,
-        total: totals.subtotal,
-        paymentMethod,
+        total: totals.subtotal + expressFee,
+        paymentMethod: paymentTiming === "PAY_ON_PICKUP" ? "CREDIT" : paymentMethod,
         items: cartItems,
       };
       addHardwareLog("info", `Commande ${order.orderNumber} enregistree.`);
@@ -306,11 +314,13 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
 
   const openCheckoutWithMethod = (method: PaymentMethod) => {
     setPaymentMethod(method);
+    setPaymentTiming(method === "CREDIT" ? "PAY_ON_PICKUP" : "PAY_NOW");
+    setExpressFee(0);
     if (cartItems.length > 0) setSheetOpen(true);
   };
 
   return (
-    <div className="flex min-h-dvh w-full max-w-none flex-col gap-0 lg:h-full lg:min-h-0 lg:flex-1 lg:overflow-hidden">
+    <div className="flex min-h-0 w-full max-w-none flex-1 flex-col gap-0 overflow-hidden bg-slate-100 lg:h-full lg:min-h-0">
       <input ref={scannerInputRef} aria-label="Scanner barcode input" className="pointer-events-none absolute h-0 w-0 opacity-0" tabIndex={-1} />
 
       {dataError ? (
@@ -324,9 +334,17 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-0 lg:min-h-0 lg:flex-1 lg:overflow-hidden">
-        <div className="grid min-h-0 w-full min-w-0 flex-1 grid-cols-1 divide-y divide-slate-200 overflow-hidden rounded-none border-0 bg-white shadow-none lg:h-full lg:min-h-0 lg:max-h-full lg:grid-cols-[4.5rem_minmax(0,1fr)_min(100%,22rem)] lg:grid-rows-1 lg:divide-x lg:divide-y-0 xl:grid-cols-[4.5rem_minmax(0,1fr)_24rem]">
-          <div className="flex flex-row gap-1.5 overflow-x-auto p-2 lg:h-full lg:min-h-0 lg:flex lg:w-full lg:flex-col lg:items-center lg:gap-2 lg:overflow-y-auto lg:overflow-x-visible lg:bg-slate-50/90 lg:p-2 lg:py-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:min-h-0">
+        {/* Mobile: un seul scroll (fond uniforme) ; desktop: hauteur fixe, scroll interne aux panneaux */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain bg-slate-100 [scrollbar-gutter:stable] lg:min-h-0 lg:overflow-hidden lg:bg-transparent">
+        <div
+          className={`grid min-h-0 w-full min-w-0 flex-1 flex-shrink-0 grid-cols-1 divide-y divide-slate-200 overflow-hidden rounded-none border-0 bg-white shadow-none lg:h-full lg:min-h-0 lg:max-h-full lg:flex-1 lg:grid-rows-1 lg:divide-x lg:divide-y-0 ${
+            catalogManagementOpen
+              ? "lg:grid-cols-[4.5rem_minmax(0,1fr)]"
+              : "lg:grid-cols-[4.5rem_minmax(0,1fr)_min(100%,22rem)] xl:grid-cols-[4.5rem_minmax(0,1fr)_24rem]"
+          }`}
+        >
+          <div className="flex flex-row gap-1.5 overflow-x-auto overscroll-x-contain p-2 lg:h-full lg:min-h-0 lg:flex lg:w-full lg:flex-col lg:items-center lg:gap-2 lg:overflow-y-auto lg:overflow-x-visible lg:overscroll-y-contain lg:bg-slate-50/90 lg:p-2 lg:py-4">
             {catalogCategories.map((category) => {
               const Icon = categoryIconMap[category.icon] ?? categoryIconMap.Package;
               const isActive = category.id === activeCategory;
@@ -360,7 +378,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
                 />
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/50 p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain bg-slate-50 p-4 [-webkit-overflow-scrolling:touch]">
               {filteredProducts.length === 0 ? (
                 <div className="flex min-h-[12rem] flex-col items-center justify-center px-4 text-center text-slate-500">
                   <p className="text-base font-medium">Aucun article trouvé.</p>
@@ -382,7 +400,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
                           if (target.closest("[data-no-card-add='true']")) return;
                           handleAddProduct(product.id);
                         }}
-                        className="relative flex flex-col overflow-hidden rounded-2xl border border-sky-200/90 bg-white shadow-md shadow-sky-100/50"
+                        className="relative flex w-full max-w-[200px] flex-col overflow-hidden rounded-2xl border border-sky-200/90 bg-white shadow-md shadow-sky-100/50"
                         role="button"
                         tabIndex={0}
                         onKeyDown={(event) => {
@@ -422,10 +440,8 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
                         </div>
 
                         <div className="flex min-w-0 flex-1 flex-col px-3 pb-3 pt-6">
-                          <h3 className="text-left text-base font-bold leading-snug tracking-tight text-slate-900">
+                          <h3 className="max-w-full truncate text-left text-base font-bold leading-snug tracking-tight text-slate-900">
                             {product.name}
-                            <span className="text-sm font-bold text-slate-400"> — </span>
-                            <span className="text-sm font-semibold text-slate-700">{selectedOption.label}</span>
                           </h3>
 
                           {product.options.length > 1 ? (
@@ -456,10 +472,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
                             </div>
                           ) : null}
 
-                          <div className="mt-3 flex min-w-0 items-center justify-between gap-2">
-                            <span className="min-w-0 max-w-[58%] truncate rounded-full border border-sky-100 bg-sky-50/90 px-2 py-1 text-xs font-medium text-slate-700">
-                              {selectedOption.label}
-                            </span>
+                          <div className="mt-3 flex min-w-0 items-center justify-end gap-2">
                             <span className="shrink-0 text-lg font-bold tracking-tight text-sky-500 tabular-nums">
                               {formatXof(displayedPrice)}
                             </span>
@@ -473,6 +486,7 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
             </div>
           </div>
 
+          {!catalogManagementOpen ? (
           <aside className="flex max-h-[min(70vh,32rem)] min-h-0 flex-col overflow-hidden bg-white lg:h-full lg:max-h-none">
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
@@ -599,82 +613,14 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
               </button>
             </div>
           </aside>
+          ) : null}
         </div>
-      </div>
 
-      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>Tunnel de commande</SheetTitle>
-            <SheetDescription>Finalisez la commande client avant impression du ticket.</SheetDescription>
-          </SheetHeader>
-          <div className="space-y-5">
-            <div className="space-y-2">
-              <label className="text-sm font-semibold">Client</label>
-              <input
-                list="clients-list"
-                value={customerQuery}
-                onChange={(event) => setCustomerQuery(event.target.value)}
-                placeholder="Rechercher un client existant..."
-                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
-              />
-              <datalist id="clients-list">
-                {clients.map((client) => (
-                  <option key={client.id} value={client.fullName} />
-                ))}
-              </datalist>
-              <input
-                value={newCustomerName}
-                onChange={(event) => setNewCustomerName(event.target.value)}
-                placeholder="Ou ajouter un nouveau client"
-                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold">Date de rendu prévue</label>
-              <input
-                type="date"
-                value={dueDate}
-                onChange={(event) => setDueDate(event.target.value)}
-                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold">Mode de paiement</label>
-              <select
-                value={paymentMethod}
-                onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)}
-                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
-              >
-                <option value="CASH">Espèces</option>
-                <option value="CARD">Carte bancaire</option>
-                <option value="MOBILE_MONEY">Mobile Money</option>
-              </select>
-            </div>
-            {checkoutMessage ? (
-              <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-700">
-                {checkoutMessage}
-              </p>
-            ) : null}
-            {printError ? (
-              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
-                {printError}
-              </p>
-            ) : null}
-            <Button
-              size="lg"
-              className="min-h-14 w-full rounded-xl bg-emerald-600 text-base hover:bg-emerald-700"
-              onClick={handleCheckout}
-              disabled={isSubmitting}
-            >
-              <CheckCircle2 className="mr-2 h-5 w-5" />
-              {isSubmitting ? "Traitement..." : "Enregistrer la commande"}
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      <details className="group border-t border-slate-200 bg-slate-50/80 shadow-sm">
+      <details
+        open={catalogManagementOpen}
+        onToggle={(event) => setCatalogManagementOpen(event.currentTarget.open)}
+        className="group flex-shrink-0 border-t border-slate-200 bg-slate-50/80 shadow-sm lg:max-h-[min(52vh,480px)] lg:overflow-y-auto lg:overscroll-contain"
+      >
         <summary className="cursor-pointer list-none px-4 py-4 font-semibold text-slate-800 marker:hidden md:px-6 [&::-webkit-details-marker]:hidden">
           <span className="flex items-center justify-between gap-2">
             Gestion catégories et articles
@@ -831,6 +777,116 @@ export function CaisseClient({ categories, clients, dataError }: CaisseClientPro
         </CardContent>
       </Card>
       </details>
+        </div>
+      </div>
+
+      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Tunnel de commande</SheetTitle>
+            <SheetDescription>Finalisez la commande client avant impression du ticket.</SheetDescription>
+          </SheetHeader>
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <label className="text-sm font-semibold">Client</label>
+              <input
+                list="clients-list"
+                value={customerQuery}
+                onChange={(event) => setCustomerQuery(event.target.value)}
+                placeholder="Rechercher un client existant..."
+                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
+              />
+              <datalist id="clients-list">
+                {clients.map((client) => (
+                  <option key={client.id} value={client.fullName} />
+                ))}
+              </datalist>
+              <input
+                value={newCustomerName}
+                onChange={(event) => setNewCustomerName(event.target.value)}
+                placeholder="Ou ajouter un nouveau client"
+                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-semibold">Date de rendu prévue</label>
+              <input
+                type="date"
+                value={dueDate}
+                onChange={(event) => setDueDate(event.target.value)}
+                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-semibold">Mode de paiement</label>
+              <select
+                value={paymentMethod}
+                onChange={(event) => {
+                  const next = event.target.value as PaymentMethod;
+                  setPaymentMethod(next);
+                  if (next === "CREDIT") setPaymentTiming("PAY_ON_PICKUP");
+                }}
+                disabled={paymentTiming === "PAY_ON_PICKUP"}
+                className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
+              >
+                <option value="CASH">Espèces</option>
+                <option value="CARD">Carte bancaire</option>
+                <option value="CREDIT">Crédit</option>
+              </select>
+            </div>
+            {paymentMethod !== "CREDIT" ? (
+              <div className="space-y-2">
+                <label className="text-sm font-semibold">Statut paiement</label>
+                <select
+                  value={paymentTiming}
+                  onChange={(event) => {
+                    const next = event.target.value as PaymentTiming;
+                    setPaymentTiming(next);
+                    if (next === "PAY_ON_PICKUP") setPaymentMethod("CREDIT");
+                  }}
+                  className="min-h-12 w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-sky-500"
+                >
+                  <option value="PAY_NOW">Payé</option>
+                  <option value="PAY_ON_PICKUP">Payé lors du retrait</option>
+                </select>
+              </div>
+            ) : null}
+            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-semibold">Service express</p>
+              <p className="text-xs text-slate-500">Ajoute automatiquement {formatXof(EXPRESS_FEE_DH)} à la commande.</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setExpressFee((prev) => (prev > 0 ? 0 : EXPRESS_FEE_DH))}
+              >
+                {expressFee > 0 ? "Retirer Express" : "Ajouter Express"}
+              </Button>
+              <p className="text-sm font-medium text-slate-700">
+                Total avec express: {formatXof(totals.subtotal + expressFee)}
+              </p>
+            </div>
+            {checkoutMessage ? (
+              <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-700">
+                {checkoutMessage}
+              </p>
+            ) : null}
+            {printError ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                {printError}
+              </p>
+            ) : null}
+            <Button
+              size="lg"
+              className="min-h-14 w-full rounded-xl bg-emerald-600 text-base hover:bg-emerald-700"
+              onClick={handleCheckout}
+              disabled={isSubmitting}
+            >
+              <CheckCircle2 className="mr-2 h-5 w-5" />
+              {isSubmitting ? "Traitement..." : "Enregistrer la commande"}
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

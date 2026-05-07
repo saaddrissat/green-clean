@@ -27,8 +27,8 @@ const registerSchema = z.object({
   laundryCount: z.coerce.number().int().min(1, "Au moins une blanchisserie."),
 });
 
-async function setSessionCookie(userId: string) {
-  const token = await signSessionToken(userId);
+async function setSessionCookie(input: { userId: string; role: "ADMIN" | "CAISSIER"; staffAccountId?: string | null }) {
+  const token = await signSessionToken(input);
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -52,11 +52,35 @@ export async function loginAction(
   }
   const email = parsed.data.email.toLowerCase().trim();
   const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
+  if (!user) {
     return { error: "Email ou mot de passe incorrect." };
   }
-  await setSessionCookie(user.id);
-  redirect("/");
+
+  if (await bcrypt.compare(parsed.data.password, user.passwordHash)) {
+    await setSessionCookie({ userId: user.id, role: "ADMIN", staffAccountId: null });
+    redirect("/");
+  }
+
+  const staffAccounts = await prisma.staffAccount.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: "asc" },
+  });
+  for (const account of staffAccounts) {
+    if (await bcrypt.compare(parsed.data.password, account.passwordHash)) {
+      await prisma.staffAccount.update({
+        where: { id: account.id },
+        data: { lastLoginAt: new Date() },
+      });
+      await setSessionCookie({
+        userId: user.id,
+        role: account.role === "CAISSIER" ? "CAISSIER" : "ADMIN",
+        staffAccountId: account.id,
+      });
+      redirect("/");
+    }
+  }
+
+  return { error: "Email ou mot de passe incorrect." };
 }
 
 export async function registerAction(

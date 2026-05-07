@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Minus, Pencil, Plus, Search, SendHorizontal, Trash2 } from "lucide-react";
+import jsPDF from "jspdf";
+import { MessageCircle, Minus, Pencil, Plus, Search, SendHorizontal, Trash2 } from "lucide-react";
 
 import {
   createClientAction,
   deleteClientAction,
+  getClientLatestInvoiceAction,
   getClientBalancesAction,
   getClientDetailsAction,
   getRecentClientOrdersAction,
@@ -31,6 +33,12 @@ type ClientsClientProps = {
 
 type ClientDetails = Awaited<ReturnType<typeof getClientDetailsAction>>;
 type RecentClientOrders = Awaited<ReturnType<typeof getRecentClientOrdersAction>>;
+type SmtpSettings = {
+  email: string;
+  pass: string;
+};
+
+const SMTP_SETTINGS_STORAGE_KEY = "gc-smtp-settings-v1";
 
 const statusLabels: Record<string, string> = {
   RECU: "Recu",
@@ -40,9 +48,10 @@ const statusLabels: Record<string, string> = {
 };
 
 const paymentMethodLabels: Record<string, string> = {
-  CASH: "Cash",
-  CARD: "Carte",
-  MOBILE_MONEY: "Mobile money",
+  CASH: "Espèces",
+  CARD: "Carte bancaire",
+  MOBILE_MONEY: "Crédit",
+  CREDIT: "Crédit",
 };
 
 const formatDh = (n: number) =>
@@ -60,7 +69,7 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
   const [isClientDetailsOpen, setIsClientDetailsOpen] = useState(false);
   const [selectedClientDetails, setSelectedClientDetails] = useState<ClientDetails | null>(null);
   const [recentOrders, setRecentOrders] = useState<RecentClientOrders>([]);
-  const [balancesByClient, setBalancesByClient] = useState<Record<string, number>>({});
+  const [balancesByClient, setBalancesByClient] = useState<Record<string, { balanceDue: number; storeCredit: number }>>({});
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
 
   const [editMode, setEditMode] = useState(false);
@@ -73,6 +82,28 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
   const [detailPreviewName, setDetailPreviewName] = useState<string | null>(null);
   /** Erreur chargement détail — visible dans la popup (pas seulement sous la liste). */
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [invoiceSendOpen, setInvoiceSendOpen] = useState(false);
+  const [invoiceTargetClient, setInvoiceTargetClient] = useState<ClientRow | null>(null);
+  const [sendPending, setSendPending] = useState(false);
+  const [smtpSettings, setSmtpSettings] = useState<SmtpSettings>({
+    email: "",
+    pass: "",
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = localStorage.getItem(SMTP_SETTINGS_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Partial<SmtpSettings>;
+      setSmtpSettings((prev) => ({
+        email: parsed.email ?? prev.email,
+        pass: parsed.pass ?? prev.pass,
+      }));
+    } catch {
+      localStorage.removeItem(SMTP_SETTINGS_STORAGE_KEY);
+    }
+  }, []);
 
   useEffect(() => {
     const loadDashboardData = async () => {
@@ -83,8 +114,8 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
         ]);
         setRecentOrders(recent);
         setBalancesByClient(
-          balances.reduce<Record<string, number>>((acc, entry) => {
-            acc[entry.clientId] = entry.balanceDue;
+          balances.reduce<Record<string, { balanceDue: number; storeCredit: number }>>((acc, entry) => {
+            acc[entry.clientId] = { balanceDue: entry.balanceDue, storeCredit: entry.storeCredit };
             return acc;
           }, {}),
         );
@@ -110,14 +141,114 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
     try {
       const balances = await getClientBalancesAction();
       setBalancesByClient(
-        balances.reduce<Record<string, number>>((acc, entry) => {
-          acc[entry.clientId] = entry.balanceDue;
+        balances.reduce<Record<string, { balanceDue: number; storeCredit: number }>>((acc, entry) => {
+          acc[entry.clientId] = { balanceDue: entry.balanceDue, storeCredit: entry.storeCredit };
           return acc;
         }, {}),
       );
     } catch {
       /* ignore */
     }
+  };
+
+  const openInvoiceSendDialog = (client: ClientRow) => {
+    setInvoiceTargetClient(client);
+    setInvoiceSendOpen(true);
+  };
+
+  const sendInvoiceByEmail = async (client: ClientRow) => {
+    setMessage("");
+    setSendPending(true);
+    try {
+      const sent = await sendClientInvoiceAction({
+        clientId: client.id,
+        smtpOverride: {
+          host: "smtp.gmail.com",
+          port: 587,
+          user: smtpSettings.email,
+          pass: smtpSettings.pass,
+          from: smtpSettings.email,
+        },
+      });
+      setMessage(`Facture envoyée à ${sent.recipient} (${sent.orderNumber}) avec succès.`);
+      setInvoiceSendOpen(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Erreur envoi facture.");
+    } finally {
+      setSendPending(false);
+    }
+  };
+
+  const sendInvoiceByWhatsApp = (client: ClientRow) => {
+    const run = async () => {
+      setMessage("");
+      try {
+        const invoice = await getClientLatestInvoiceAction(client.id);
+        if (!invoice.phone) {
+          setMessage("Ce client n'a pas de numéro WhatsApp.");
+          return;
+        }
+        const digits = invoice.phone.replace(/\D/g, "");
+        if (!digits) {
+          setMessage("Numéro WhatsApp invalide.");
+          return;
+        }
+        const number = digits.startsWith("0") && digits.length === 10 ? `212${digits.slice(1)}` : digits;
+        const totalFormatted = `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(invoice.total)} DH`;
+        const invoiceDate = new Intl.DateTimeFormat("fr-FR", {
+          dateStyle: "short",
+          timeStyle: "short",
+        }).format(new Date(invoice.orderDateIso));
+        const fileName = `facture-${invoice.orderNumber}.pdf`;
+        const pdf = new jsPDF({ unit: "mm", format: "a4" });
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(18);
+        pdf.text("FACTURE", 20, 20);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(11);
+        pdf.text("Green Clean", 20, 30);
+        pdf.text(`Client: ${invoice.clientName}`, 20, 42);
+        pdf.text(`Numero: ${invoice.orderNumber}`, 20, 50);
+        pdf.text(`Date: ${invoiceDate}`, 20, 58);
+        pdf.text(`Montant total: ${totalFormatted}`, 20, 66);
+        pdf.setDrawColor(210, 210, 210);
+        pdf.line(20, 74, 190, 74);
+        pdf.setFontSize(10);
+        pdf.text("Merci de votre confiance.", 20, 82);
+        const blob = pdf.output("blob");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        const waMessage = `Bonjour ${invoice.clientName}, votre facture ${invoice.orderNumber} (${totalFormatted}) est prête. Le fichier a été téléchargé sur votre appareil.`;
+
+        // Sur mobile/support natif, essaie d'envoyer texte + fichier dans le même partage.
+        if (typeof navigator !== "undefined" && "share" in navigator && "canShare" in navigator) {
+          const file = new File([blob], fileName, { type: "application/pdf" });
+          const canShareFile = (navigator as Navigator & { canShare?: (data: ShareData) => boolean }).canShare?.({
+            files: [file],
+          });
+          if (canShareFile) {
+            try {
+              await navigator.share({ text: waMessage, files: [file], title: `Facture ${invoice.orderNumber}` });
+            } catch {
+              // L'utilisateur peut annuler le partage; on continue vers WhatsApp.
+            }
+          }
+        }
+
+        window.open(`https://wa.me/${number}?text=${encodeURIComponent(waMessage)}`, "_blank", "noopener,noreferrer");
+        setInvoiceSendOpen(false);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Erreur envoi WhatsApp.");
+      }
+    };
+    void run();
   };
 
   const handleAddClient = async () => {
@@ -236,7 +367,7 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
   };
 
   const adjustCredit = (delta: number) => {
-    setEditStoreCredit((prev) => Math.max(0, Math.round((prev + delta) * 100) / 100));
+    setEditStoreCredit((prev) => Math.round((prev + delta) * 100) / 100);
   };
 
   const selectedId = selectedClientDetails?.client.id;
@@ -310,9 +441,13 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                     {client.totalOrders}
                   </td>
                   <td className="border-b border-slate-200 px-4 py-4 text-right">
-                    {balancesByClient[client.id] > 0 ? (
+                    {(balancesByClient[client.id]?.balanceDue ?? 0) > 0 ? (
                       <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
-                        Reste: {formatDh(balancesByClient[client.id])}
+                        Reste: {formatDh(balancesByClient[client.id]?.balanceDue ?? 0)}
+                      </span>
+                    ) : (balancesByClient[client.id]?.storeCredit ?? 0) > 0 ? (
+                      <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">
+                        Crédit: {formatDh(balancesByClient[client.id]?.storeCredit ?? 0)}
                       </span>
                     ) : (
                       <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
@@ -344,17 +479,7 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                         className="h-10 w-10 shrink-0 rounded-lg text-slate-900"
                         aria-label="Envoyer la facture par email"
                         title="Envoyer la facture"
-                        onClick={async () => {
-                          setMessage("");
-                          try {
-                            const sent = await sendClientInvoiceAction(client.id);
-                            setMessage(
-                              `Facture envoyée à ${sent.recipient} (${sent.orderNumber}) avec succès.`,
-                            );
-                          } catch (error) {
-                            setMessage(error instanceof Error ? error.message : "Erreur envoi facture.");
-                          }
-                        }}
+                        onClick={() => openInvoiceSendDialog(client)}
                       >
                         <SendHorizontal className="h-4 w-4" aria-hidden />
                       </Button>
@@ -468,6 +593,59 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
       </Dialog>
 
       <Dialog
+        open={invoiceSendOpen}
+        onOpenChange={(open) => {
+          setInvoiceSendOpen(open);
+          if (!open) setInvoiceTargetClient(null);
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Envoyer la facture</DialogTitle>
+            <DialogDescription>
+              Choisissez le canal d&apos;envoi pour {invoiceTargetClient?.fullName ?? "ce client"}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid gap-2 rounded-xl border border-slate-200 p-3 text-sm">
+              <p className="text-slate-700">
+                <span className="font-semibold">Email:</span> {invoiceTargetClient?.email ?? "Non renseigné"}
+              </p>
+              <p className="text-slate-700">
+                <span className="font-semibold">WhatsApp:</span> {invoiceTargetClient?.phone ?? "Non renseigné"}
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="justify-start gap-2"
+                disabled={!invoiceTargetClient?.phone}
+                onClick={() => invoiceTargetClient && sendInvoiceByWhatsApp(invoiceTargetClient)}
+              >
+                <MessageCircle className="h-4 w-4" />
+                WhatsApp
+              </Button>
+              <Button
+                type="button"
+                className="justify-start gap-2"
+                disabled={!invoiceTargetClient?.email || sendPending}
+                onClick={() => invoiceTargetClient && void sendInvoiceByEmail(invoiceTargetClient)}
+              >
+                <SendHorizontal className="h-4 w-4" />
+                {sendPending ? "Envoi..." : "Email"}
+              </Button>
+            </div>
+            {!smtpSettings.email || !smtpSettings.pass ? (
+              <p className="text-xs text-amber-700">
+                SMTP incomplet. Configurez-le dans Paramètres &gt; Factures en ligne.
+              </p>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={isClientDetailsOpen}
         onOpenChange={(open) => {
           setIsClientDetailsOpen(open);
@@ -545,23 +723,15 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                       </label>
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs font-medium text-slate-600">Crédit magasin (DHs)</p>
+                      <p className="text-xs font-medium text-slate-600">Crédit clients</p>
                       <p className="mb-2 text-xs text-slate-500">
-                        Réduit le « reste à payer » sur les commandes non livrées. Utilisez les boutons pour ajouter ou
-                        retirer du crédit.
+                        Positif: montant que le magasin doit au client. Négatif: montant que le client doit au magasin.
+                        Utilisez les boutons pour ajuster.
                       </p>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(-100)}>
                           <Minus className="h-4 w-4" />
                           100
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(-50)}>
-                          <Minus className="h-4 w-4" />
-                          50
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(50)}>
-                          <Plus className="h-4 w-4" />
-                          50
                         </Button>
                         <Button type="button" variant="outline" size="sm" onClick={() => adjustCredit(100)}>
                           <Plus className="h-4 w-4" />
@@ -569,13 +739,10 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                         </Button>
                         <input
                           type="number"
-                          min={0}
                           step={1}
                           value={editStoreCredit || ""}
                           onChange={(e) =>
-                            setEditStoreCredit(
-                              e.target.value === "" ? 0 : Math.max(0, Number.parseFloat(e.target.value) || 0),
-                            )
+                            setEditStoreCredit(e.target.value === "" ? 0 : Number.parseFloat(e.target.value) || 0)
                           }
                           className="min-h-10 w-32 rounded-lg border border-slate-300 px-2 text-sm"
                         />
@@ -599,14 +766,16 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                       {formatDh(selectedClientDetails.client.ordersOwed ?? 0)}
                     </p>
                     <p className="text-sm text-slate-700">
-                      <span className="font-semibold">Crédit magasin:</span>{" "}
+                      <span className="font-semibold">Crédit clients:</span>{" "}
                       {formatDh(selectedClientDetails.client.storeCredit ?? 0)}
                     </p>
                     <p className="text-sm text-slate-700">
                       <span className="font-semibold">Reste à payer:</span>{" "}
                       {(selectedClientDetails.client.balanceDue ?? 0) > 0
                         ? formatDh(selectedClientDetails.client.balanceDue ?? 0)
-                        : "Solde OK"}
+                        : (selectedClientDetails.client.storeCredit ?? 0) > 0
+                          ? `Crédit: ${formatDh(selectedClientDetails.client.storeCredit ?? 0)}`
+                          : "Solde OK"}
                     </p>
                   </div>
                 )}
@@ -671,15 +840,15 @@ export function ClientsClient({ initialClients }: ClientsClientProps) {
                     type="button"
                     variant="outline"
                     disabled={!selectedId}
-                    onClick={async () => {
-                      if (!selectedId) return;
-                      setMessage("");
-                      try {
-                        const sent = await sendClientInvoiceAction(selectedId);
-                        setMessage(`Facture envoyée à ${sent.recipient} (${sent.orderNumber}) avec succès.`);
-                      } catch (error) {
-                        setMessage(error instanceof Error ? error.message : "Erreur envoi facture.");
-                      }
+                    onClick={() => {
+                      if (!selectedClientDetails?.client) return;
+                      openInvoiceSendDialog({
+                        id: selectedClientDetails.client.id,
+                        fullName: selectedClientDetails.client.fullName,
+                        phone: selectedClientDetails.client.phone,
+                        email: selectedClientDetails.client.email,
+                        totalOrders: 0,
+                      });
                     }}
                   >
                     <SendHorizontal className="mr-2 h-4 w-4" />

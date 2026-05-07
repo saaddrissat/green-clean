@@ -19,6 +19,7 @@ enum PaymentMethod {
   CASH
   CARD
   MOBILE_MONEY
+  CREDIT
 }
 
 enum ExpenseCategory {
@@ -28,6 +29,11 @@ enum ExpenseCategory {
   MAINTENANCE
   LOGISTIQUE
   AUTRE
+}
+
+enum StaffRole {
+  ADMIN
+  CAISSIER
 }
 
 enum ReportProblemKind {
@@ -54,30 +60,51 @@ enum NotificationCategory {
 }
 
 model User {
-  id             String    @id @default(cuid()) @map("_id")
-  name           String
-  email          String    @unique
-  passwordHash   String
-  phone          String
-  city           String
-  employeeCount  Int
-  laundryCount   Int
-  /** Heure de fermeture boutique locale "HH:mm" pour rappels caisse (optionnel). */
-  storeClosingTime   String?
-  /** Seuil alerte dépenses / revenus du jour (ex. 0.4 = 40%). */
-  expenseAlertRatio  Float?   @default(0.4)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  categories     Category[]
-  clients        Client[]
-  orders         Order[]
-  providers      Provider[]
-  expenses       Expense[]
-  appReports     AppReport[]
-  notifications  Notification[]
-  cancelledOrders CancelledOrderAudit[]
-  cashClosures   CashClosure[]
-  calendarEvents CalendarEvent[]
+  id                  String    @id @default(cuid()) @map("_id")
+  name                String
+  email               String    @unique
+  passwordHash        String
+  phone               String
+  city                String
+  employeeCount       Int
+  laundryCount        Int
+  isEmailVerified     Boolean   @default(false)
+  verifyToken         String?
+  verifyTokenExp      DateTime?
+  storeClosingTime    String?
+  expenseAlertRatio   Float?    @default(0.4)
+  cashReserveAmount   Float?    @default(0)
+  cashClosureTimePref String?
+  cashWorkDays        String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  categories          Category[]
+  clients             Client[]
+  orders              Order[]
+  providers           Provider[]
+  expenses            Expense[]
+  appReports          AppReport[]
+  notifications       Notification[]
+  cancelledOrders     CancelledOrderAudit[]
+  cashClosures        CashClosure[]
+  calendarEvents      CalendarEvent[]
+  staffAccounts       StaffAccount[]
+}
+
+model StaffAccount {
+  id           String    @id @default(cuid()) @map("_id")
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName     String
+  role         StaffRole @default(CAISSIER)
+  passwordHash String
+  pageAccess   Json?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId, role])
+  @@index([userId, createdAt])
 }
 
 model AppReport {
@@ -113,7 +140,7 @@ model Product {
   nameAr      String?
   barcode     String                 @unique
   imageUrl    String?
-  basePrice   Float               
+  basePrice   Float
   isActive    Boolean                @default(true)
   categoryId  String
   category    Category               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
@@ -126,12 +153,12 @@ model Product {
 }
 
 model ProductServiceOption {
-  id            String   @id @default(cuid()) @map("_id")
+  id            String  @id @default(cuid()) @map("_id")
   label         String
   labelAr       String?
-  priceModifier Float  @default(0) 
+  priceModifier Float   @default(0)
   productId     String
-  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product       Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([productId])
 }
@@ -143,7 +170,6 @@ model Client {
   fullName    String
   phone       String?
   email       String?
-  /** Crédit magasin (DHs) : réduit le reste à payer sur les commandes non livrées. */
   storeCredit Float    @default(0)
   totalOrders Int      @default(0)
   orders      Order[]
@@ -162,7 +188,7 @@ model Order {
   orderNumber   String        @unique
   status        OrderStatus   @default(RECU)
   paymentMethod PaymentMethod
-  total         Float       
+  total         Float
   dueDate       DateTime
   cashierId     String
   clientId      String?
@@ -178,18 +204,18 @@ model Order {
 }
 
 model Notification {
-  id         String               @id @default(cuid()) @map("_id")
-  userId     String
-  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type       NotificationCategory
-  priority   NotificationPriority @default(INFO)
-  title      String
-  message    String
-  isRead     Boolean              @default(false)
-  link       String?
-  dedupeKey  String?
-  metadata   Json?
-  createdAt  DateTime             @default(now())
+  id        String               @id @default(cuid()) @map("_id")
+  userId    String
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationCategory
+  priority  NotificationPriority @default(INFO)
+  title     String
+  message   String
+  isRead    Boolean              @default(false)
+  link      String?
+  dedupeKey String?
+  metadata  Json?
+  createdAt DateTime             @default(now())
 
   @@index([userId, createdAt])
   @@index([userId, isRead, createdAt])
@@ -218,42 +244,46 @@ model CashClosure {
   closedAt      DateTime @default(now())
   revenueTotal  Float    @default(0)
   expenseTotal  Float    @default(0)
+  countedAmount Float?
+  expectedNet   Float    @default(0)
+  difference    Float    @default(0)
+  comment       String?
 
   @@index([userId, closureDate])
 }
 
 model CalendarEvent {
-  id             String    @id @default(cuid()) @map("_id")
-  userId         String
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title          String
-  start          DateTime
-  end            DateTime
-  allDay         Boolean   @default(false)
-  color          String
-  location       String?
-  description    String?
-  guests         String?
-  reminder       String?
+  id               String    @id @default(cuid()) @map("_id")
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title            String
+  start            DateTime
+  end              DateTime
+  allDay           Boolean   @default(false)
+  color            String
+  location         String?
+  description      String?
+  guests           String?
+  reminder         String?
   reminder15SentAt DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@index([userId, start])
 }
 
 model OrderItem {
-  id               String   @id @default(cuid()) @map("_id")
-  orderId          String
-  order            Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId        String
-  product          Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productName      String
-  optionLabel      String
-  quantity         Int
-  unitPrice        Float  
-  lineTotal        Float  
-  createdAt        DateTime @default(now())
+  id          String   @id @default(cuid()) @map("_id")
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productName String
+  optionLabel String
+  quantity    Int
+  unitPrice   Float
+  lineTotal   Float
+  createdAt   DateTime @default(now())
 
   @@index([orderId])
   @@index([productId])
@@ -266,6 +296,7 @@ model Provider {
   name      String
   phone     String?
   email     String?
+  category  String?
   expenses  Expense[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -278,7 +309,7 @@ model Expense {
   userId      String
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   title       String
-  amount      Float         
+  amount      Float
   category    ExpenseCategory @default(AUTRE)
   expenseDate DateTime
   notes       String?
@@ -289,4 +320,4 @@ model Expense {
 
   @@index([userId, expenseDate, category])
   @@index([expenseDate, category])
-}
+ }

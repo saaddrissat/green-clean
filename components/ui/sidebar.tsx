@@ -1,11 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LogOut, type LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 export type SidebarItem = {
@@ -37,6 +37,7 @@ export function AppSidebar({
   logoutDisabled,
 }: AppSidebarProps) {
   const pathname = usePathname();
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const iconOnly = variant === "icon-only";
   const initials = currentUserName
     .split(" ")
@@ -116,43 +117,49 @@ export function AppSidebar({
         )}
       >
         {onLogout ? (
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  "flex w-full items-center rounded-xl bg-slate-900/80 text-left text-slate-100 transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70",
-                  iconOnly ? "h-12 w-12 justify-center p-0" : "gap-3 px-3 py-2",
-                )}
-                title={`${currentUserName} — ${currentUserRole}`}
-                aria-label="Ouvrir le menu compte"
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">
-                  {initials || "U"}
+          <div className="relative">
+            <button
+              type="button"
+              className={cn(
+                "flex w-full items-center rounded-xl bg-slate-900/80 text-left text-slate-100 transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70",
+                iconOnly ? "h-12 w-12 justify-center p-0" : "gap-3 px-3 py-2",
+              )}
+              title={`${currentUserName} — ${currentUserRole}`}
+              aria-label="Ouvrir le menu compte"
+              onClick={() => setAccountMenuOpen((prev) => !prev)}
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">
+                {initials || "U"}
+              </div>
+              {!iconOnly ? (
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{currentUserName}</p>
+                  <p className="truncate text-xs text-slate-400">{currentUserRole}</p>
                 </div>
-                {!iconOnly ? (
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold">{currentUserName}</p>
-                    <p className="truncate text-xs text-slate-400">{currentUserRole}</p>
-                  </div>
-                ) : null}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent side="right" align="end" sideOffset={10} className="w-56 p-3">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Compte</p>
-              <p className="mb-3 truncate text-sm font-medium text-slate-900">{currentUserName}</p>
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full gap-2 border-rose-200/80 text-rose-700 hover:bg-rose-50"
-                onClick={onLogout}
-                disabled={logoutDisabled}
-              >
-                <LogOut className="h-4 w-4" />
-                {logoutDisabled ? "Déconnexion…" : "Déconnexion"}
-              </Button>
-            </PopoverContent>
-          </Popover>
+              ) : null}
+            </button>
+            {accountMenuOpen ? (
+              <div className={cn("absolute z-50 w-56 rounded-xl border border-slate-200 bg-white p-3 shadow-lg", iconOnly ? "bottom-0 left-14" : "bottom-14 left-0")}>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {`Compte (${currentUserRole})`}
+                </p>
+                <p className="mb-3 truncate text-sm font-medium text-slate-900">{currentUserName}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full gap-2 border-rose-200/80 text-rose-700 hover:bg-rose-50"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    onLogout();
+                  }}
+                  disabled={logoutDisabled}
+                >
+                  <LogOut className="h-4 w-4" />
+                  {logoutDisabled ? "Déconnexion…" : "Déconnexion"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
         ) : (
           <div
             className={cn(

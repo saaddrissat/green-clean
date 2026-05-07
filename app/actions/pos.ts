@@ -7,6 +7,7 @@ import { notifyInvoiceSentAction } from "@/app/actions/notifications";
 import { getSessionUser } from "@/lib/auth/get-session";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import { sendInvoiceEmail } from "@/lib/smtp-mailer";
 
 async function requireAccountUserId(): Promise<string> {
   const user = await getSessionUser();
@@ -27,7 +28,8 @@ type CreateOrderItemInput = {
 type CreateOrderInput = {
   clientName?: string;
   dueDate: string;
-  paymentMethod: "CASH" | "CARD" | "MOBILE_MONEY";
+  paymentMethod: "CASH" | "CARD" | "CREDIT";
+  expressFee?: number;
   items: CreateOrderItemInput[];
 };
 
@@ -148,7 +150,9 @@ export async function createOrderAction(input: CreateOrderInput) {
     throw new Error("Date de rendu invalide.");
   }
 
-  const total = input.items.reduce((acc, item) => acc + item.unitPrice * item.quantity, 0);
+  const baseTotal = input.items.reduce((acc, item) => acc + item.unitPrice * item.quantity, 0);
+  const expressFee = Number.isFinite(input.expressFee) ? Math.max(0, Number(input.expressFee)) : 0;
+  const total = baseTotal + expressFee;
   const year = new Date().getFullYear();
   let orderNumber = "";
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -226,6 +230,7 @@ export async function createOrderAction(input: CreateOrderInput) {
     });
   });
 
+  revalidatePath("/");
   revalidatePath("/caisse");
   revalidatePath("/clients");
   revalidatePath("/calendrier");
@@ -331,6 +336,7 @@ export async function updateOrderStatusAction(orderId: string, targetStatus?: Or
     select: { id: true, status: true },
   });
 
+  revalidatePath("/");
   revalidatePath("/suivi");
   revalidatePath("/notifications");
   return updated;
@@ -401,6 +407,7 @@ export async function cancelOrderAction(input: CancelOrderInput) {
     },
   });
 
+  revalidatePath("/");
   revalidatePath("/suivi");
   revalidatePath("/notifications");
   revalidatePath("/notifications/commandes-annulees");
@@ -750,8 +757,8 @@ export async function updateClientAction(input: UpdateClientInput) {
   const phone = input.phone?.trim() || null;
   const email = input.email?.trim() || null;
 
-  if (!Number.isFinite(input.storeCredit) || input.storeCredit < 0) {
-    throw new Error("Le credit magasin doit etre zero ou positif.");
+  if (!Number.isFinite(input.storeCredit)) {
+    throw new Error("Le montant de credit magasin est invalide.");
   }
 
   try {
@@ -874,43 +881,44 @@ export async function getClientOrderHistoryAction(clientId: string) {
   }
 }
 
-export async function sendClientInvoiceAction(clientId: string) {
-  if (!clientId?.trim()) {
+export async function sendClientInvoiceAction(input: {
+  clientId: string;
+  smtpOverride?: {
+    host?: string;
+    port?: number | string;
+    secure?: boolean;
+    user?: string;
+    pass?: string;
+    from?: string;
+  };
+}) {
+  if (!input.clientId?.trim()) {
     throw new Error("Client invalide.");
   }
 
   try {
     const userId = await requireAccountUserId();
-    const client = await prisma.client.findFirst({
-      where: { id: clientId, userId },
-      select: { id: true, fullName: true, email: true },
-    });
-
-    if (!client) {
-      throw new Error("Client introuvable.");
-    }
-    if (!client.email) {
+    const data = await getClientLatestInvoiceAction(input.clientId);
+    if (!data.email) {
       throw new Error("Ce client n'a pas d'email.");
     }
 
-    const latestOrder = await prisma.order.findFirst({
-      where: { clientId, userId },
-      orderBy: { createdAt: "desc" },
-      select: { orderNumber: true, total: true, createdAt: true },
+    await sendInvoiceEmail({
+      to: data.email,
+      clientName: data.clientName,
+      orderNumber: data.orderNumber,
+      total: data.total,
+      orderDateIso: data.orderDateIso,
+      smtpOverride: input.smtpOverride,
     });
 
-    if (!latestOrder) {
-      throw new Error("Aucune commande à facturer pour ce client.");
-    }
-
-    // Placeholder: simulate invoice delivery until mailing service is wired.
     const session = await getSessionUser();
     if (session) {
       await notifyInvoiceSentAction({
         channel: "EMAIL",
-        clientName: client.fullName,
-        orderNumber: latestOrder.orderNumber,
-        recipient: client.email,
+        clientName: data.clientName,
+        orderNumber: data.orderNumber,
+        recipient: data.email,
       });
     }
 
@@ -918,15 +926,55 @@ export async function sendClientInvoiceAction(clientId: string) {
 
     return {
       ok: true,
-      recipient: client.email,
-      orderNumber: latestOrder.orderNumber,
-      total: Number(latestOrder.total),
+      recipient: data.email,
+      orderNumber: data.orderNumber,
+      total: data.total,
     };
   } catch (error) {
     if (error instanceof Error && !error.message.startsWith("Erreur base de donnees")) {
+      if (/Invalid login|auth|EAUTH|535|Username and Password not accepted/i.test(error.message)) {
+        throw new Error(
+          "Échec SMTP: authentification refusée. Utilisez un mot de passe d’application dans SMTP_PASS.",
+        );
+      }
       throw error;
     }
     throw toSafeDbError(error, "envoi facture client");
+  }
+}
+
+export async function getClientLatestInvoiceAction(clientId: string) {
+  if (!clientId?.trim()) {
+    throw new Error("Client invalide.");
+  }
+  try {
+    const userId = await requireAccountUserId();
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, userId },
+      select: { id: true, fullName: true, email: true, phone: true },
+    });
+    if (!client) {
+      throw new Error("Client introuvable.");
+    }
+    const latestOrder = await prisma.order.findFirst({
+      where: { clientId, userId },
+      orderBy: { createdAt: "desc" },
+      select: { orderNumber: true, total: true, createdAt: true },
+    });
+    if (!latestOrder) {
+      throw new Error("Aucune commande à facturer pour ce client.");
+    }
+    return {
+      clientId: client.id,
+      clientName: client.fullName,
+      email: client.email,
+      phone: client.phone,
+      orderNumber: latestOrder.orderNumber,
+      total: Number(latestOrder.total),
+      orderDateIso: latestOrder.createdAt.toISOString(),
+    };
+  } catch (error) {
+    throw toSafeDbError(error, "recuperation facture client");
   }
 }
 
@@ -1017,10 +1065,12 @@ export async function getClientBalancesAction() {
     });
 
     return clients.map((client) => {
+      const storeCredit = Number(client.storeCredit);
       const ordersOwed = client.orders.reduce((sum, order) => sum + Number(order.total), 0);
-      const balanceDue = Math.max(0, ordersOwed - Number(client.storeCredit));
+      const balanceDue = Math.max(0, ordersOwed - storeCredit);
       return {
         clientId: client.id,
+        storeCredit,
         balanceDue,
       };
     });

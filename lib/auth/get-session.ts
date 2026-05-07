@@ -10,8 +10,14 @@ export async function getSessionUser() {
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
   try {
-    const userId = await verifySessionToken(token);
-    return prisma.user.findUnique({ where: { id: userId } });
+    const session = await verifySessionToken(token);
+    const user = await prisma.user.findUnique({ where: { id: session.userId } });
+    if (!user) return null;
+    return {
+      ...user,
+      sessionRole: session.role,
+      staffAccountId: session.staffAccountId ?? null,
+    };
   } catch {
     return null;
   }

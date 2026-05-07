@@ -89,8 +89,6 @@ export function hrefToPageKey(pathname: string): PageKey | null {
 export type AccountItem = {
   id: string;
   fullName: string;
-  username: string;
-  email: string;
   role: AccountRole;
   createdAt: string;
   lastLoginAt: string | null;

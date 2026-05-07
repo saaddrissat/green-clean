@@ -8,6 +8,7 @@ import {
   CalendarDays,
   Cog,
   FileBarChart2,
+  Search,
   LayoutDashboard,
   ListChecks,
   LogOut,
@@ -27,6 +28,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { logoutAction } from "@/app/actions/auth";
+import { globalSearchAction, type GlobalSearchResult } from "@/app/actions/global-search";
 import { getUnreadNotificationCountAction } from "@/app/actions/notifications";
 import { NotificationCenter } from "@/components/notifications/notification-center";
 import { AppSidebar, type SidebarItem } from "@/components/ui/sidebar";
@@ -36,6 +38,7 @@ import {
   firstAllowedHref,
   hrefToPageKey,
   isPathAllowed,
+  type PageAccess,
 } from "@/lib/navigation-page-access";
 import { getNavigationContext, resetNavigationToFullAccess } from "@/lib/navigation-context";
 import { cn } from "@/lib/utils";
@@ -50,38 +53,6 @@ const baseNavItems: SidebarItem[] = [
   { label: "Rapports", href: "/rapports", icon: FileBarChart2 },
   { label: "Notifications", href: "/notifications", icon: Bell },
   { label: "Parametres", href: "/parametres", icon: Cog },
-];
-
-type ToastNotification = {
-  id: string;
-  title: string;
-  message: string;
-};
-
-type StoredNotification = {
-  id: string;
-  title: string;
-  message: string;
-  level: "info" | "warning";
-  period: "today" | "week" | "month";
-  createdAt: string;
-};
-
-const unreadStorageKey = "gc-unread-notifications";
-const notificationsStorageKey = "gc-notifications-feed";
-const mockIncomingNotifications: Omit<ToastNotification, "id">[] = [
-  {
-    title: "Nouvelle commande urgente",
-    message: "Une commande avec échéance proche vient d'être enregistrée.",
-  },
-  {
-    title: "Alerte délai",
-    message: "Une commande en cours approche la date de retrait.",
-  },
-  {
-    title: "Notification caisse",
-    message: "Un nouveau paiement a été validé sur la caisse.",
-  },
 ];
 
 function filterNavByAccess(
@@ -106,14 +77,18 @@ export default function DashboardLayout({
   const isCaisse = pathname === "/caisse" || pathname.startsWith("/caisse/");
   const [unreadCount, setUnreadCount] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [sessionUser, setSessionUser] = useState<{ id: string; name: string; email: string } | null>(
-    null,
-  );
+  const [searchValue, setSearchValue] = useState("");
+  const [searchResults, setSearchResults] = useState<GlobalSearchResult[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [sessionUser, setSessionUser] = useState<{
+    id: string;
+    name: string;
+    email: string;
+    role?: "ADMIN" | "CAISSIER";
+    staffAccountId?: string | null;
+    pageAccess?: PageAccess | null;
+  } | null>(null);
   const [logoutPending, startLogoutTransition] = useTransition();
-  const [toasts, setToasts] = useState<ToastNotification[]>([]);
-  const dismissToast = (toastId: string) => {
-    setToasts((prev) => prev.filter((item) => item.id !== toastId));
-  };
 
   useEffect(() => {
     const sync = () => {
@@ -136,16 +111,35 @@ export default function DashboardLayout({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/auth/me")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { id?: string; name?: string; email?: string } | null) => {
-        if (!cancelled && data?.id && data?.name && data?.email) {
-          setSessionUser({ id: data.id, name: data.name, email: data.email });
-        }
-      })
-      .catch(() => {});
+    const loadSessionUser = () => {
+      void fetch(`/api/auth/me?t=${Date.now()}`, { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: {
+          id?: string;
+          name?: string;
+          email?: string;
+          role?: "ADMIN" | "CAISSIER";
+          staffAccountId?: string | null;
+          pageAccess?: PageAccess | null;
+        } | null) => {
+          if (!cancelled && data?.id && data?.name && data?.email) {
+            setSessionUser({
+              id: data.id,
+              name: data.name,
+              email: data.email,
+              role: data.role,
+              staffAccountId: data.staffAccountId ?? null,
+              pageAccess: data.pageAccess ?? null,
+            });
+          }
+        })
+        .catch(() => {});
+    };
+    loadSessionUser();
+    window.addEventListener("focus", loadSessionUser);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", loadSessionUser);
     };
   }, []);
 
@@ -162,12 +156,21 @@ export default function DashboardLayout({
   }, []);
 
   const resolvedAccess = useMemo(() => {
+    if (sessionUser?.role === "CAISSIER" && sessionUser.pageAccess) {
+      return sessionUser.pageAccess;
+    }
     const ctx = getNavigationContext();
     if (ctx.mode === "full") return null;
     const account = findAccountById(ctx.accountId, sessionUser?.id);
     if (!account) return null;
     return effectivePageAccess(account);
-  }, [navEpoch, sessionUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps -- navEpoch : recalcul contexte / comptes
+  }, [navEpoch, sessionUser?.id, sessionUser?.role, sessionUser?.pageAccess]); // eslint-disable-line react-hooks/exhaustive-deps -- navEpoch : recalcul contexte / comptes
+
+  const activeCaissierAccount = useMemo(() => {
+    const ctx = getNavigationContext();
+    if (ctx.mode !== "restricted") return null;
+    return findAccountById(ctx.accountId, sessionUser?.id) ?? null;
+  }, [navEpoch, sessionUser?.id]);
 
   useEffect(() => {
     if (!resolvedAccess) return;
@@ -182,49 +185,38 @@ export default function DashboardLayout({
       .catch(() => {});
   }, [pathname]);
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      const seed = Date.now();
-      const next = mockIncomingNotifications[seed % mockIncomingNotifications.length];
-      const incoming: ToastNotification = {
-        id: `notif-${seed}`,
-        title: next.title,
-        message: next.message,
-      };
-      const storedIncoming: StoredNotification = {
-        id: incoming.id,
-        title: incoming.title,
-        message: incoming.message,
-        level: incoming.title.toLowerCase().includes("alerte") ? "warning" : "info",
-        period: "today",
-        createdAt: new Date().toISOString(),
-      };
-
-      setToasts((prev) => [...prev, incoming]);
-      try {
-        const current = JSON.parse(localStorage.getItem(notificationsStorageKey) ?? "[]") as StoredNotification[];
-        const nextFeed = [storedIncoming, ...current].slice(0, 100);
-        localStorage.setItem(notificationsStorageKey, JSON.stringify(nextFeed));
-      } catch {
-        // Ignore malformed local storage values.
-      }
-      window.setTimeout(() => {
-        dismissToast(incoming.id);
-      }, 4200);
-
-      // Les alertes « temps réel » passent par la base (notifications) ; ne pas incrémenter le badge ici.
-    }, 45000);
-
-    return () => window.clearInterval(interval);
-  }, [pathname]);
-
-  const visibleNav = resolvedAccess ? filterNavByAccess(baseNavItems, resolvedAccess) : baseNavItems;
-
-  const navItems = visibleNav.map((item) =>
-    item.href === "/notifications" ? { ...item, hasAlert: unreadCount > 0 } : item,
+  const visibleNav = useMemo(
+    () => (resolvedAccess ? filterNavByAccess(baseNavItems, resolvedAccess) : baseNavItems),
+    [resolvedAccess],
   );
-  const currentUserName = sessionUser?.name ?? "Utilisateur";
-  const currentUserRole = sessionUser?.email ?? "Compte";
+
+  const navItems = useMemo(
+    () =>
+      visibleNav.map((item) =>
+        item.href === "/notifications" ? { ...item, hasAlert: unreadCount > 0 } : item,
+      ),
+    [visibleNav, unreadCount],
+  );
+  const canAccessNotifications = !resolvedAccess || resolvedAccess.notifications === true;
+  const pageResults = useMemo<GlobalSearchResult[]>(
+    () =>
+      navItems.map((item) => ({
+        id: `page-${item.href}`,
+        label: item.label,
+        subtitle: "Page",
+        href: item.href,
+        kind: "page",
+      })),
+    [navItems],
+  );
+  const currentUserName = activeCaissierAccount?.fullName ?? sessionUser?.name ?? "Utilisateur";
+  const currentUserRole = activeCaissierAccount
+    ? "Caissier"
+    : sessionUser?.role === "CAISSIER"
+      ? "Caissier"
+      : sessionUser?.role === "ADMIN"
+        ? "Admin"
+        : sessionUser?.email ?? "Compte";
 
   const handleLogout = () => {
     resetNavigationToFullAccess();
@@ -233,6 +225,28 @@ export default function DashboardLayout({
     startLogoutTransition(() => {
       void logoutAction();
     });
+  };
+
+  useEffect(() => {
+    const q = searchValue.trim();
+    if (q.length < 2) {
+      setSearchResults((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    const t = window.setTimeout(() => {
+      const qLower = q.toLowerCase();
+      const pageMatches = pageResults.filter((p) => p.label.toLowerCase().includes(qLower)).slice(0, 6);
+      void globalSearchAction(q)
+        .then((remote) => setSearchResults([...pageMatches, ...remote]))
+        .catch(() => setSearchResults(pageMatches));
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [searchValue, pageResults]);
+
+  const openSearchResult = (href: string) => {
+    setSearchOpen(false);
+    setSearchValue("");
+    router.push(href);
   };
 
   return (
@@ -251,11 +265,51 @@ export default function DashboardLayout({
         </div>
 
         <div className="relative flex min-h-0 min-w-0 flex-col">
-          <div className="pointer-events-none absolute right-4 top-4 z-30 hidden md:block">
-            <div className="pointer-events-auto">
-              <NotificationCenter />
+          {!isCaisse ? (
+            <div className="hidden items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 md:flex">
+              <div className="relative w-full max-w-xl">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="search"
+                  value={searchValue}
+                  onChange={(e) => {
+                    setSearchValue(e.target.value);
+                    setSearchOpen(true);
+                  }}
+                  onFocus={() => setSearchOpen(true)}
+                  onBlur={() => window.setTimeout(() => setSearchOpen(false), 150)}
+                  placeholder="Rechercher pages, clients, fournisseurs..."
+                  className="min-h-11 w-full rounded-xl border border-slate-300 bg-slate-50 pl-10 pr-3 text-sm outline-none ring-0 transition focus:border-emerald-500 focus:bg-white"
+                />
+                {searchOpen && searchValue.trim().length >= 2 ? (
+                  <div className="absolute z-40 mt-2 max-h-80 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+                    {searchResults.length === 0 ? (
+                      <p className="px-3 py-2 text-sm text-slate-500">Aucun résultat.</p>
+                    ) : (
+                      searchResults.map((row) => (
+                        <button
+                          key={row.id}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => openSearchResult(row.href)}
+                          className="flex w-full items-start justify-between rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                        >
+                          <span>
+                            <span className="block text-sm font-medium text-slate-900">{row.label}</span>
+                            <span className="block text-xs text-slate-500">{row.subtitle}</span>
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-500">
+                            {row.kind}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              {canAccessNotifications ? <NotificationCenter /> : null}
             </div>
-          </div>
+          ) : null}
           <div className="border-b border-slate-200 bg-white px-4 py-3 md:hidden">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -268,7 +322,7 @@ export default function DashboardLayout({
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <NotificationCenter />
+                {!isCaisse && canAccessNotifications ? <NotificationCenter /> : null}
               <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
                 <SheetTrigger asChild>
                   <Button
@@ -320,6 +374,48 @@ export default function DashboardLayout({
               </Sheet>
               </div>
             </div>
+            {!isCaisse ? (
+              <div className="relative mt-3">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="search"
+                  value={searchValue}
+                  onChange={(e) => {
+                    setSearchValue(e.target.value);
+                    setSearchOpen(true);
+                  }}
+                  onFocus={() => setSearchOpen(true)}
+                  onBlur={() => window.setTimeout(() => setSearchOpen(false), 150)}
+                  placeholder="Rechercher partout..."
+                  className="min-h-11 w-full rounded-xl border border-slate-300 bg-slate-50 pl-10 pr-3 text-sm outline-none transition focus:border-emerald-500 focus:bg-white"
+                />
+                {searchOpen && searchValue.trim().length >= 2 ? (
+                  <div className="absolute z-40 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+                    {searchResults.length === 0 ? (
+                      <p className="px-3 py-2 text-sm text-slate-500">Aucun résultat.</p>
+                    ) : (
+                      searchResults.map((row) => (
+                        <button
+                          key={`${row.id}-mobile`}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => openSearchResult(row.href)}
+                          className="flex w-full items-start justify-between rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                        >
+                          <span>
+                            <span className="block text-sm font-medium text-slate-900">{row.label}</span>
+                            <span className="block text-xs text-slate-500">{row.subtitle}</span>
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-500">
+                            {row.kind}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <main
             className={cn(
@@ -332,30 +428,6 @@ export default function DashboardLayout({
             {children}
           </main>
         </div>
-      </div>
-      <div className="pointer-events-none fixed right-4 top-4 z-[60] flex w-[min(92vw,360px)] flex-col gap-2">
-        {toasts.map((toast) => (
-          <Link
-            key={toast.id}
-            href="/notifications"
-            className="pointer-events-auto relative rounded-xl border border-slate-200 bg-white p-3 pr-10 shadow-lg shadow-slate-300/40"
-            onClick={() => dismissToast(toast.id)}
-          >
-            <button
-              type="button"
-              aria-label="Fermer la notification"
-              className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
-              onClick={(event) => {
-                event.stopPropagation();
-                dismissToast(toast.id);
-              }}
-            >
-              ×
-            </button>
-            <p className="text-sm font-semibold text-slate-900">{toast.title}</p>
-            <p className="mt-1 text-xs text-slate-600">{toast.message}</p>
-          </Link>
-        ))}
       </div>
     </div>
   );

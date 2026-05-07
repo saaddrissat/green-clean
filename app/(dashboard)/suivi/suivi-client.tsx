@@ -64,6 +64,13 @@ const nextLabel: Partial<Record<OrderStatus, string>> = {
   TERMINE: "Marquer Livre",
 };
 
+const paymentMethodLabel = (method: string) => {
+  if (method === "CASH") return "Espèces";
+  if (method === "CARD") return "Carte bancaire";
+  if (method === "CREDIT" || method === "MOBILE_MONEY") return "Crédit";
+  return method;
+};
+
 type SuiviClientProps = {
   initialOrders: OrderRow[];
 };
@@ -485,7 +492,7 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
                       <DialogHeader>
                         <DialogTitle>{order.orderNumber}</DialogTitle>
                         <DialogDescription>
-                          Paiement: {order.paymentMethod} - Statut: {order.status}
+                          Paiement: {paymentMethodLabel(order.paymentMethod)} - Statut: {order.status}
                         </DialogDescription>
                       </DialogHeader>
                       <div className="space-y-2">
@@ -581,7 +588,7 @@ export function SuiviClient({ initialOrders }: SuiviClientProps) {
                             <DialogHeader>
                               <DialogTitle>{order.orderNumber}</DialogTitle>
                               <DialogDescription>
-                                Paiement: {order.paymentMethod} - Statut: {order.status}
+                                Paiement: {paymentMethodLabel(order.paymentMethod)} - Statut: {order.status}
                               </DialogDescription>
                             </DialogHeader>
                             <div className="space-y-2">

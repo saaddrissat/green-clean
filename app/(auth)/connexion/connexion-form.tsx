@@ -23,7 +23,9 @@ export function ConnexionForm({ showRegisteredSuccess }: ConnexionFormProps) {
           GC
         </div>
         <CardTitle className="text-2xl">Green Clean</CardTitle>
-        <CardDescription>Connectez-vous avec votre email et votre mot de passe.</CardDescription>
+        <CardDescription>
+          Connectez-vous avec l&apos;email principal et le mot de passe du profil (Admin ou Caissier).
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {showRegisteredSuccess ? (
@@ -47,7 +49,7 @@ export function ConnexionForm({ showRegisteredSuccess }: ConnexionFormProps) {
               type="email"
               autoComplete="email"
               required
-              placeholder="vous@exemple.com"
+              placeholder="Email principal de la boutique"
             />
           </div>
           <div className="space-y-2">
