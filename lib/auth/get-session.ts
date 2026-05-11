@@ -1,11 +1,18 @@
+import type { User } from "@prisma/client";
 import { cookies } from "next/headers";
 
 import { prisma } from "@/lib/prisma";
 
 import { SESSION_COOKIE } from "./constants";
+import type { WorkspaceRole } from "./jwt";
 import { verifySessionToken } from "./jwt";
 
-export async function getSessionUser() {
+export type SessionUserWithRole = User & {
+  sessionRole: WorkspaceRole;
+  staffAccountId: string | null;
+};
+
+export async function getSessionUser(): Promise<SessionUserWithRole | null> {
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -17,7 +24,7 @@ export async function getSessionUser() {
       ...user,
       sessionRole: session.role,
       staffAccountId: session.staffAccountId ?? null,
-    };
+    } satisfies SessionUserWithRole;
   } catch {
     return null;
   }

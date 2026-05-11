@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/auth/constants";
+import type { PlatformRole, WorkspaceRole } from "@/lib/auth/jwt";
 import { signSessionToken } from "@/lib/auth/jwt";
 import { prisma } from "@/lib/prisma";
 
@@ -27,7 +28,12 @@ const registerSchema = z.object({
   laundryCount: z.coerce.number().int().min(1, "Au moins une blanchisserie."),
 });
 
-async function setSessionCookie(input: { userId: string; role: "ADMIN" | "CAISSIER"; staffAccountId?: string | null }) {
+async function setSessionCookie(input: {
+  userId: string;
+  role: WorkspaceRole;
+  staffAccountId?: string | null;
+  platformRole: PlatformRole;
+}) {
   const token = await signSessionToken(input);
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {
@@ -57,8 +63,18 @@ export async function loginAction(
   }
 
   if (await bcrypt.compare(parsed.data.password, user.passwordHash)) {
-    await setSessionCookie({ userId: user.id, role: "ADMIN", staffAccountId: null });
-    redirect("/");
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
+    const platformRole: PlatformRole = user.role === "SUPERADMIN" ? "SUPERADMIN" : "USER";
+    await setSessionCookie({
+      userId: user.id,
+      role: "ADMIN",
+      staffAccountId: null,
+      platformRole,
+    });
+    redirect(user.role === "SUPERADMIN" ? "/admin/dashboard" : "/");
   }
 
   const staffAccounts = await prisma.staffAccount.findMany({
@@ -67,6 +83,10 @@ export async function loginAction(
   });
   for (const account of staffAccounts) {
     if (await bcrypt.compare(parsed.data.password, account.passwordHash)) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLogin: new Date() },
+      });
       await prisma.staffAccount.update({
         where: { id: account.id },
         data: { lastLoginAt: new Date() },
@@ -75,6 +95,7 @@ export async function loginAction(
         userId: user.id,
         role: account.role === "CAISSIER" ? "CAISSIER" : "ADMIN",
         staffAccountId: account.id,
+        platformRole: "USER",
       });
       redirect("/");
     }
@@ -114,6 +135,8 @@ export async function registerAction(
         city: parsed.data.city.trim(),
         employeeCount: parsed.data.employeeCount,
         laundryCount: parsed.data.laundryCount,
+        role: "USER",
+        plan: "DEMO",
       },
     });
   } catch (e) {

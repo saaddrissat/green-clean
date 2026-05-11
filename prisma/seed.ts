@@ -6,6 +6,7 @@ const prisma = new PrismaClient();
 /** Données de démo : uniquement pour le compte créé ici (pas pour les nouveaux comptes via l’app). */
 const DEMO_USER_EMAIL = process.env.SEED_DEMO_USER_EMAIL ?? "demo@green-clean.local";
 const DEMO_USER_PASSWORD = process.env.SEED_DEMO_USER_PASSWORD ?? "DemoGreen2026!";
+const SUPERADMIN_EMAIL = process.env.SEED_SUPERADMIN_EMAIL?.toLowerCase().trim();
 
 const categorySeeds = [
   { name: "Chemises", icon: "Shirt" },
@@ -130,9 +131,13 @@ async function main() {
       city: "Dakar",
       employeeCount: 2,
       laundryCount: 1,
+      role: "USER",
+      plan: "DEMO",
     },
     update: {
       name: "Compte démo Green Clean",
+      role: "USER",
+      plan: "DEMO",
     },
   });
 
@@ -208,6 +213,18 @@ async function main() {
         email: "walkin@green-clean.local",
       },
     });
+  }
+
+  if (SUPERADMIN_EMAIL) {
+    const promoted = await prisma.user.updateMany({
+      where: { email: SUPERADMIN_EMAIL },
+      data: { role: "SUPERADMIN", plan: "BUSINESS" },
+    });
+    if (promoted.count === 0) {
+      console.warn(
+        `[seed] Aucun utilisateur avec l’email SEED_SUPERADMIN_EMAIL=${SUPERADMIN_EMAIL} — créez ce compte puis relancez le seed.`,
+      );
+    }
   }
 }
 

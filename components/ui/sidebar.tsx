@@ -15,6 +15,16 @@ export type SidebarItem = {
   hasAlert?: boolean;
 };
 
+/** Libellé entre parenthèses sous « Compte » (Admin / Caissier). */
+function accountRoleParenthetical(role: string): string {
+  const r = role.trim().toLowerCase();
+  if (r === "admin" || r === "administrateur") return "Admin";
+  if (r === "caissier" || r === "caissière") return "Caissier";
+  if (r === "compte" || r === "") return "Admin";
+  if (r.includes("@")) return "Utilisateur";
+  return role.trim() || "Admin";
+}
+
 type AppSidebarProps = {
   title: string;
   items: SidebarItem[];
@@ -39,6 +49,7 @@ export function AppSidebar({
   const pathname = usePathname();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const iconOnly = variant === "icon-only";
+  const roleInMenu = accountRoleParenthetical(currentUserRole);
   const initials = currentUserName
     .split(" ")
     .filter(Boolean)
@@ -140,14 +151,17 @@ export function AppSidebar({
             </button>
             {accountMenuOpen ? (
               <div className={cn("absolute z-50 w-56 rounded-xl border border-slate-200 bg-white p-3 shadow-lg", iconOnly ? "bottom-0 left-14" : "bottom-14 left-0")}>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  {`Compte (${currentUserRole})`}
+                <p className="text-sm font-semibold leading-snug text-slate-900">
+                  Compte{" "}
+                  <span className="font-medium text-slate-600">({roleInMenu})</span>
                 </p>
-                <p className="mb-3 truncate text-sm font-medium text-slate-900">{currentUserName}</p>
+                <p className="mt-1.5 truncate text-sm text-slate-800" title={currentUserName}>
+                  {currentUserName}
+                </p>
                 <Button
                   type="button"
                   variant="outline"
-                  className="w-full gap-2 border-rose-200/80 text-rose-700 hover:bg-rose-50"
+                  className="mt-3 w-full gap-2 border-rose-200/80 text-rose-700 hover:bg-rose-50"
                   onClick={() => {
                     setAccountMenuOpen(false);
                     onLogout();

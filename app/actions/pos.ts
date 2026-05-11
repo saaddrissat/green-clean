@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { notifyInvoiceSentAction } from "@/app/actions/notifications";
 import { getSessionUser } from "@/lib/auth/get-session";
 import { createNotification } from "@/lib/notifications";
+import { DEMO_MAX_ORDERS } from "@/lib/plan-features";
 import { prisma } from "@/lib/prisma";
 import { sendInvoiceEmail } from "@/lib/smtp-mailer";
 
@@ -148,6 +149,19 @@ export async function createOrderAction(input: CreateOrderInput) {
   const dueDate = new Date(input.dueDate);
   if (Number.isNaN(dueDate.getTime())) {
     throw new Error("Date de rendu invalide.");
+  }
+
+  const tenant = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { plan: true },
+  });
+  if (tenant?.plan === "DEMO") {
+    const orderCount = await prisma.order.count({ where: { userId } });
+    if (orderCount >= DEMO_MAX_ORDERS) {
+      throw new Error(
+        `Plan démo : limite de ${DEMO_MAX_ORDERS} commandes atteinte. Passez à un plan supérieur pour continuer.`,
+      );
+    }
   }
 
   const baseTotal = input.items.reduce((acc, item) => acc + item.unitPrice * item.quantity, 0);

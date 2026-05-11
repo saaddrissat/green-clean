@@ -39,8 +39,9 @@ export async function middleware(request: NextRequest) {
   if (isPublicPath(pathname)) {
     if (token && secret) {
       try {
-        await jwtVerify(token, secret);
-        return NextResponse.redirect(new URL("/", request.url));
+        const { payload } = await jwtVerify(token, secret);
+        const dest = payload.platformRole === "SUPERADMIN" ? "/admin/dashboard" : "/";
+        return NextResponse.redirect(new URL(dest, request.url));
       } catch {
         // jeton invalide : afficher la page publique
       }
@@ -57,7 +58,10 @@ export async function middleware(request: NextRequest) {
   }
 
   try {
-    await jwtVerify(token, secret);
+    const { payload } = await jwtVerify(token, secret);
+    if (pathname.startsWith("/admin") && payload.platformRole !== "SUPERADMIN") {
+      return NextResponse.redirect(new URL("/", request.url));
+    }
     return NextResponse.next();
   } catch {
     const res = NextResponse.redirect(new URL("/connexion", request.url));

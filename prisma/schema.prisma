@@ -36,6 +36,19 @@ enum StaffRole {
   CAISSIER
 }
 
+/// Rôle plateforme du titulaire du compte (tenant vs super-admin back-office).
+enum UserRole {
+  USER
+  SUPERADMIN
+}
+
+enum SubscriptionPlan {
+  DEMO
+  STARTER
+  PRO
+  BUSINESS
+}
+
 enum ReportProblemKind {
   BUG_TECHNIQUE
   CONNEXION_COMPTE
@@ -60,17 +73,18 @@ enum NotificationCategory {
 }
 
 model User {
-  id                  String    @id @default(cuid()) @map("_id")
+  id                  String            @id @default(cuid()) @map("_id")
   name                String
-  email               String    @unique
+  email               String            @unique
   passwordHash        String
   phone               String
   city                String
   employeeCount       Int
   laundryCount        Int
-  isEmailVerified     Boolean   @default(false)
-  verifyToken         String?
-  verifyTokenExp      DateTime?
+  role                UserRole          @default(USER)
+  plan                SubscriptionPlan  @default(DEMO)
+  lastLogin           DateTime?
+  emailVerified       DateTime?
   storeClosingTime    String?
   expenseAlertRatio   Float?    @default(0.4)
   cashReserveAmount   Float?    @default(0)
@@ -321,3 +335,11 @@ model Expense {
   @@index([userId, expenseDate, category])
   @@index([expenseDate, category])
  }
+
+model VerificationToken {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  @@unique([identifier, token])
+}
