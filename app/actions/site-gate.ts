@@ -27,9 +27,9 @@ export async function verifySiteGateAction(
   formData: FormData,
 ): Promise<SiteGateFormState> {
   const password = String(formData.get("password") ?? "").trim();
-  const redirectTo = safeRedirectPath(
-    typeof formData.get("redirect") === "string" ? formData.get("redirect") : null,
-  );
+  const redirectRaw = formData.get("redirect");
+  const redirectParam = typeof redirectRaw === "string" ? redirectRaw : null;
+  const redirectTo = safeRedirectPath(redirectParam);
 
   if (password !== getSiteGatePassword()) {
     return { error: "Code d'accès incorrect." };
