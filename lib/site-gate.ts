@@ -16,10 +16,13 @@ export function isSiteGateExemptPath(pathname: string): boolean {
   return pathname === SITE_GATE_PATH || pathname.startsWith(`${SITE_GATE_PATH}/`);
 }
 
+/** Clé de signature du cookie portail (fonctionne même si AUTH_SECRET manque en prod). */
 function secretKey() {
-  const secret = resolveAuthSecret();
-  if (!secret || secret.length < 32) return null;
-  return new TextEncoder().encode(secret);
+  const auth = resolveAuthSecret();
+  if (auth && auth.length >= 32) {
+    return new TextEncoder().encode(auth);
+  }
+  return new TextEncoder().encode(`gc-site-gate:${getSiteGatePassword()}`);
 }
 
 export async function signSiteGateToken(): Promise<string | null> {

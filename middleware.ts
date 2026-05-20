@@ -48,22 +48,29 @@ export async function middleware(request: NextRequest) {
     } else {
       url.searchParams.set("redirect", "/connexion");
     }
-    return NextResponse.redirect(url);
+    const res = NextResponse.redirect(url);
+    if (gateToken) {
+      res.cookies.delete(SITE_GATE_COOKIE);
+    }
+    return res;
+  }
+
+  if (gateOk && pathname === SITE_GATE_PATH) {
+    const redirectParam = request.nextUrl.searchParams.get("redirect");
+    const dest =
+      redirectParam &&
+      redirectParam.startsWith("/") &&
+      !redirectParam.startsWith("//") &&
+      !redirectParam.startsWith(SITE_GATE_PATH)
+        ? redirectParam
+        : "/connexion";
+    return NextResponse.redirect(new URL(dest, request.url));
   }
 
   const secret = getSecret();
   const token = request.cookies.get(SESSION_COOKIE)?.value;
 
   if (isPublicPath(pathname)) {
-    if (token && secret) {
-      try {
-        const { payload } = await jwtVerify(token, secret);
-        const dest = payload.platformRole === "SUPERADMIN" ? "/admin/dashboard" : "/";
-        return NextResponse.redirect(new URL(dest, request.url));
-      } catch {
-        // jeton invalide : afficher la page publique
-      }
-    }
     return NextResponse.next();
   }
 
