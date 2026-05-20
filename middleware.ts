@@ -3,6 +3,12 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 import { resolveAuthSecret } from "@/lib/auth-secret";
+import {
+  SITE_GATE_COOKIE,
+  SITE_GATE_PATH,
+  isSiteGateExemptPath,
+  verifySiteGateToken,
+} from "@/lib/site-gate";
 
 const SESSION_COOKIE = "gc-session";
 
@@ -31,6 +37,18 @@ export async function middleware(request: NextRequest) {
 
   if (/\.(ico|png|jpg|jpeg|svg|webp|gif|woff2?)$/i.test(pathname)) {
     return NextResponse.next();
+  }
+
+  const gateToken = request.cookies.get(SITE_GATE_COOKIE)?.value;
+  const gateOk = await verifySiteGateToken(gateToken);
+  if (!gateOk && !isSiteGateExemptPath(pathname)) {
+    const url = new URL(SITE_GATE_PATH, request.url);
+    if (pathname !== "/") {
+      url.searchParams.set("redirect", pathname);
+    } else {
+      url.searchParams.set("redirect", "/connexion");
+    }
+    return NextResponse.redirect(url);
   }
 
   const secret = getSecret();
