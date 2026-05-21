@@ -2,13 +2,8 @@ import { z } from "zod";
 
 import { resolveAuthSecret } from "./auth-secret";
 
-function isDatabaseUrl(value: string) {
-  return (
-    value.startsWith("postgresql://") ||
-    value.startsWith("postgres://") ||
-    value.startsWith("mongodb://") ||
-    value.startsWith("mongodb+srv://")
-  );
+function isMongoDatabaseUrl(value: string) {
+  return value.startsWith("mongodb://") || value.startsWith("mongodb+srv://");
 }
 
 const envSchema = z.object({
@@ -16,8 +11,8 @@ const envSchema = z.object({
     .string()
     .min(1, "DATABASE_URL is required.")
     .refine(
-      isDatabaseUrl,
-      "DATABASE_URL must be a PostgreSQL or MongoDB connection string (see prisma/schema.prisma).",
+      isMongoDatabaseUrl,
+      "DATABASE_URL doit commencer par mongodb:// ou mongodb+srv:// (voir .env.example et prisma/schema.prisma).",
     ),
   AUTH_SECRET: z
     .string()

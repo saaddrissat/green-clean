@@ -57,7 +57,19 @@ export async function loginAction(
     return { error: "Vérifiez votre email et votre mot de passe." };
   }
   const email = parsed.data.email.toLowerCase().trim();
-  const user = await prisma.user.findUnique({ where: { email } });
+  let user;
+  try {
+    user = await prisma.user.findUnique({ where: { email } });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg.includes("protocol `mongo") || msg.includes("Error validating datasource")) {
+      return {
+        error:
+          "Connexion impossible : DATABASE_URL doit être une URL MongoDB (mongodb+srv://…) dans le fichier .env, puis redémarrez le serveur.",
+      };
+    }
+    throw e;
+  }
   if (!user) {
     return { error: "Email ou mot de passe incorrect." };
   }

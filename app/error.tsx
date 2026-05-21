@@ -28,7 +28,11 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-              {error.message || "Erreur inconnue"}
+              {error.message.includes("protocol `mongo") ||
+              error.message.includes("mongodb://") ||
+              error.message.includes("mongodb+srv")
+                ? "La variable DATABASE_URL dans le fichier .env doit être une URL MongoDB (mongodb+srv://…), pas PostgreSQL. Copiez la chaîne depuis MongoDB Atlas ou Vercel, puis redémarrez npm run dev."
+                : error.message || "Erreur inconnue"}
             </div>
 
             <Button onClick={reset} className="mt-4 w-full min-h-12">

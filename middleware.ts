@@ -67,6 +67,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL(dest, request.url));
   }
 
+  /** Page code d'accès : pas de session requise (sinon boucle / page blanche). */
+  if (isSiteGateExemptPath(pathname)) {
+    return NextResponse.next();
+  }
+
   const secret = getSecret();
   const token = request.cookies.get(SESSION_COOKIE)?.value;
 
